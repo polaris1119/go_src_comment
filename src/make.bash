@@ -84,20 +84,36 @@ rm -f ./pkg/runtime/runtime_defs.go
 
 echo '# Building C bootstrap tool.'
 echo cmd/dist
+# export当前Go源码所在跟目录为GOROOT
 export GOROOT="$(cd .. && pwd)"
+# 如果GOROOT_FINAL没有设置，则使用$GOROOT的值当做GOROOT_FINAL
 GOROOT_FINAL="${GOROOT_FINAL:-$GOROOT}"
 DEFGOROOT='-DGOROOT_FINAL="'"$GOROOT_FINAL"'"'
 
+# 如果在amd64机子上编译Go本身为32位，可以设置 $GOHOSTARCH=386。不建议这么做
 mflag=""
 case "$GOHOSTARCH" in
 386) mflag=-m32;;
 amd64) mflag=-m64;;
 esac
+
+# gcc编译：编译cmd/dist下所有的c文件
+# -m：指定处理器架构，以便进行优化（-m32、-m64）或为空（一般为空）
+# -O：优化选项，一般为：-O2。优化得到的程序比没优化的要小，执行速度可能也有所提高
+# -Wall：生成所有警告信息
+# -Werror：所有警告信息都变成错误
+# -ggdb：为gdb生成调试信息（-g是生成调试信息）
+# -o：生成指定的输出文件
+# -I：指定额外的文件搜索路径
+# -D：相当于C语言中的#define GOROOT_FINAL="$GOROOT_FINAL"
 gcc $mflag -O2 -Wall -Werror -ggdb -o cmd/dist/dist -Icmd/dist "$DEFGOROOT" cmd/dist/*.c
 
+# 编译完 dist 工具后，运行dist。目的是设置相关环境变量
+# 比如：$GOTOOLDIR 环境变量就是这里设置的
 eval $(./cmd/dist/dist env -p)
 echo
 
+# 运行make.bash时传递--dist-tool参数可以仅编译dist工具
 if [ "$1" = "--dist-tool" ]; then
 	# Stop after building dist tool.
 	mkdir -p "$GOTOOLDIR"
@@ -108,18 +124,28 @@ if [ "$1" = "--dist-tool" ]; then
 	exit 0
 fi
 
+# 构建 编译器和Go引导工具
+# $GOHOSTOS/$GOHOSTARCH 是运行dist设置的
 echo "# Building compilers and Go bootstrap tool for host, $GOHOSTOS/$GOHOSTARCH."
+# 表示重新构建
 buildall="-a"
+# 传递--no-clean 表示不重新构建
 if [ "$1" = "--no-clean" ]; then
 	buildall=""
 fi
+# 构建Go引导工具
 ./cmd/dist/dist bootstrap $buildall -v # builds go_bootstrap
 # Delay move of dist tool to now, because bootstrap may clear tool directory.
 mv cmd/dist/dist "$GOTOOLDIR"/dist
 "$GOTOOLDIR"/go_bootstrap clean -i std
 echo
 
+# $GOHOSTARCH 与 $GOARCH的区别：（$GOHOSTOS 与 $GOOS的区别一样）
+#	GOARCH 表示Go写出来的程序会在什么架构运行（目标操作系统）；
+#	GOHOSTARCH 表示运行make.bash这个脚本的系统架构
+# 一般它们是相等的，只有在需要交叉编译时才会不一样。
 if [ "$GOHOSTARCH" != "$GOARCH" -o "$GOHOSTOS" != "$GOOS" ]; then
+	# 即使交叉编译，本机的Go环境还是必须得有
 	echo "# Building packages and commands for host, $GOHOSTOS/$GOHOSTARCH."
 	GOOS=$GOHOSTOS GOARCH=$GOHOSTARCH \
 		"$GOTOOLDIR"/go_bootstrap install -gcflags "$GO_GCFLAGS" -ldflags "$GO_LDFLAGS" -v std
@@ -132,6 +158,9 @@ echo
 
 rm -f "$GOTOOLDIR"/go_bootstrap
 
+# 是否打印安装成功的提示信息。一般为：
+#	Installed Go for $GOOS/$GOARCH in $GOROOT
+#	Installed commands in $GOROOT/bin
 if [ "$1" != "--no-banner" ]; then
 	"$GOTOOLDIR"/dist banner
 fi
