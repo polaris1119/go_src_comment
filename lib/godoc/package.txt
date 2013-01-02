@@ -1,0 +1,83 @@
+{{with .PAst}}{{node . $.FSet}}{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .PDoc}}{{if $.IsPkg}}PACKAGE
+
+package {{.Name}}
+    import "{{.ImportPath}}"
+
+{{else}}COMMAND DOCUMENTATION
+
+{{end}}{{comment_text .Doc "    " "\t"}}{{/*
+
+---------------------------------------
+
+*/}}{{with .Consts}}
+CONSTANTS
+
+{{range .}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}{{end}}
+{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .Vars}}
+VARIABLES
+
+{{range .}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}{{end}}
+{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .Funcs}}
+FUNCTIONS
+
+{{range .}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .Types}}
+TYPES
+
+{{range .}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}
+{{range .Consts}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{range .Vars}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{range .Funcs}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{range .Methods}}{{node .Decl $.FSet}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{end}}{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .Bugs}}
+BUGS
+
+{{range .}}{{comment_text . "    " "\t"}}
+{{end}}{{end}}{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .PList}}
+OTHER PACKAGES
+
+{{range .}}
+{{.}}{{end}}
+{{end}}{{/*
+
+---------------------------------------
+
+*/}}{{with .Dirs}}
+SUBDIRECTORIES
+{{if $.DirFlat}}{{range .List}}{{if .HasPkg}}
+	{{.Path}}{{end}}{{end}}
+{{else}}{{range .List}}
+	{{repeat `. ` .Depth}}{{.Name}}{{end}}
+{{end}}{{end}}
