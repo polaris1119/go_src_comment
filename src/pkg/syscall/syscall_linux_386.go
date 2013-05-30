@@ -41,7 +41,7 @@ func NsecToTimeval(nsec int64) (tv Timeval) {
 //sys	Lstat(path string, stat *Stat_t) (err error) = SYS_LSTAT64
 //sys	Pread(fd int, p []byte, offset int64) (n int, err error) = SYS_PREAD64
 //sys	Pwrite(fd int, p []byte, offset int64) (n int, err error) = SYS_PWRITE64
-//sys	Sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) = SYS_SENDFILE64
+//sys	sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) = SYS_SENDFILE64
 //sys	Setfsgid(gid int) (err error) = SYS_SETFSGID32
 //sys	Setfsuid(uid int) (err error) = SYS_SETFSUID32
 //sysnb	Setgid(gid int) (err error) = SYS_SETGID32
@@ -65,6 +65,69 @@ func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int6
 		return 0, EINVAL
 	}
 	return mmap2(addr, length, prot, flags, fd, page)
+}
+
+type rlimit32 struct {
+	Cur uint32
+	Max uint32
+}
+
+//sysnb getrlimit(resource int, rlim *rlimit32) (err error) = SYS_GETRLIMIT
+
+const rlimInf32 = ^uint32(0)
+const rlimInf64 = ^uint64(0)
+
+func Getrlimit(resource int, rlim *Rlimit) (err error) {
+	err = prlimit(0, resource, rlim, nil)
+	if err != ENOSYS {
+		return err
+	}
+
+	rl := rlimit32{}
+	err = getrlimit(resource, &rl)
+	if err != nil {
+		return
+	}
+
+	if rl.Cur == rlimInf32 {
+		rlim.Cur = rlimInf64
+	} else {
+		rlim.Cur = uint64(rl.Cur)
+	}
+
+	if rl.Max == rlimInf32 {
+		rlim.Max = rlimInf64
+	} else {
+		rlim.Max = uint64(rl.Max)
+	}
+	return
+}
+
+//sysnb setrlimit(resource int, rlim *rlimit32) (err error) = SYS_SETRLIMIT
+
+func Setrlimit(resource int, rlim *Rlimit) (err error) {
+	err = prlimit(0, resource, nil, rlim)
+	if err != ENOSYS {
+		return err
+	}
+
+	rl := rlimit32{}
+	if rlim.Cur == rlimInf64 {
+		rl.Cur = rlimInf32
+	} else if rlim.Cur < uint64(rlimInf32) {
+		rl.Cur = uint32(rlim.Cur)
+	} else {
+		return EINVAL
+	}
+	if rlim.Max == rlimInf64 {
+		rl.Max = rlimInf32
+	} else if rlim.Max < uint64(rlimInf32) {
+		rl.Max = uint32(rlim.Max)
+	} else {
+		return EINVAL
+	}
+
+	return setrlimit(resource, &rl)
 }
 
 // Underlying system call writes to newoffset via pointer.
@@ -101,6 +164,9 @@ const (
 	_GETSOCKOPT  = 15
 	_SENDMSG     = 16
 	_RECVMSG     = 17
+	_ACCEPT4     = 18
+	_RECVMMSG    = 19
+	_SENDMMSG    = 20
 )
 
 func socketcall(call int, a0, a1, a2, a3, a4, a5 uintptr) (n int, err Errno)
@@ -108,6 +174,14 @@ func rawsocketcall(call int, a0, a1, a2, a3, a4, a5 uintptr) (n int, err Errno)
 
 func accept(s int, rsa *RawSockaddrAny, addrlen *_Socklen) (fd int, err error) {
 	fd, e := socketcall(_ACCEPT, uintptr(s), uintptr(unsafe.Pointer(rsa)), uintptr(unsafe.Pointer(addrlen)), 0, 0, 0)
+	if e != 0 {
+		err = e
+	}
+	return
+}
+
+func accept4(s int, rsa *RawSockaddrAny, addrlen *_Socklen, flags int) (fd int, err error) {
+	fd, e := socketcall(_ACCEPT4, uintptr(s), uintptr(unsafe.Pointer(rsa)), uintptr(unsafe.Pointer(addrlen)), uintptr(flags), 0, 0)
 	if e != 0 {
 		err = e
 	}
@@ -130,7 +204,7 @@ func getpeername(s int, rsa *RawSockaddrAny, addrlen *_Socklen) (err error) {
 	return
 }
 
-func socketpair(domain int, typ int, flags int, fd *[2]int) (err error) {
+func socketpair(domain int, typ int, flags int, fd *[2]int32) (err error) {
 	_, e := rawsocketcall(_SOCKETPAIR, uintptr(domain), uintptr(typ), uintptr(flags), uintptr(unsafe.Pointer(fd)), 0, 0)
 	if e != 0 {
 		err = e
@@ -243,7 +317,7 @@ func Fstatfs(fd int, buf *Statfs_t) (err error) {
 }
 
 func Statfs(path string, buf *Statfs_t) (err error) {
-	pathp, err := bytePtrFromString(path)
+	pathp, err := BytePtrFromString(path)
 	if err != nil {
 		return err
 	}

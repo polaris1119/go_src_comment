@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <setjmp.h>
 
 // bprintf replaces the buffer with the result of the printf formatting
 // and returns a pointer to the NUL-terminated buffer contents.
@@ -177,7 +178,7 @@ genrun(Buf *b, char *dir, int mode, Vec *argv, int wait)
 		bwritestr(&cmd, q);
 	}
 	if(vflag > 1)
-		xprintf("%s\n", bstr(&cmd));
+		errprintf("%s\n", bstr(&cmd));
 
 	if(b != nil) {
 		breset(b);
@@ -398,7 +399,7 @@ void
 xremove(char *p)
 {
 	if(vflag > 2)
-		xprintf("rm %s\n", p);
+		errprintf("rm %s\n", p);
 	unlink(p);
 }
 
@@ -420,11 +421,11 @@ xremoveall(char *p)
 			xremoveall(bstr(&b));
 		}
 		if(vflag > 2)
-			xprintf("rm %s\n", p);
+			errprintf("rm %s\n", p);
 		rmdir(p);
 	} else {
 		if(vflag > 2)
-			xprintf("rm %s\n", p);
+			errprintf("rm %s\n", p);
 		unlink(p);
 	}
 	
@@ -627,6 +628,17 @@ xprintf(char *fmt, ...)
 	va_end(arg);
 }
 
+// errprintf prints a message to standard output.
+void
+errprintf(char *fmt, ...)
+{
+	va_list arg;
+	
+	va_start(arg, fmt);
+	vfprintf(stderr, fmt, arg);
+	va_end(arg);
+}
+
 // xsetenv sets the environment variable $name to the given value.
 void
 xsetenv(char *name, char *value)
@@ -658,6 +670,10 @@ main(int argc, char **argv)
 	gohostos = "linux";
 #elif defined(__FreeBSD__)
 	gohostos = "freebsd";
+#elif defined(__FreeBSD_kernel__)
+	// detect debian/kFreeBSD. 
+	// http://wiki.debian.org/Debian_GNU/kFreeBSD_FAQ#Q._How_do_I_detect_kfreebsd_with_preprocessor_directives_in_a_C_program.3F
+	gohostos = "freebsd";	
 #elif defined(__OpenBSD__)
 	gohostos = "openbsd";
 #elif defined(__NetBSD__)
@@ -681,6 +697,19 @@ main(int argc, char **argv)
 
 	if(strcmp(gohostarch, "arm") == 0)
 		maxnbg = 1;
+
+	// The OS X 10.6 linker does not support external
+	// linking mode; see
+	// https://code.google.com/p/go/issues/detail?id=5130 .
+	// The mapping from the uname release field to the OS X
+	// version number is complicated, but basically 10 or under is
+	// OS X 10.6 or earlier.
+	if(strcmp(gohostos, "darwin") == 0) {
+		if(uname(&u) < 0)
+			fatal("uname: %s", strerror(errno));
+		if(u.release[1] == '.' || hasprefix(u.release, "10"))
+			goextlinkenabled = "0";
+	}
 
 	init();
 	xmain(argc, argv);
@@ -714,6 +743,77 @@ char*
 xstrrchr(char *p, int c)
 {
 	return strrchr(p, c);
+}
+
+// xsamefile returns whether f1 and f2 are the same file (or dir)
+int
+xsamefile(char *f1, char *f2)
+{
+	return streq(f1, f2); // suffice for now
+}
+
+sigjmp_buf sigill_jmpbuf;
+static void sigillhand(int);
+
+// xtryexecfunc tries to execute function f, if any illegal instruction
+// signal received in the course of executing that function, it will
+// return 0, otherwise it will return 1.
+// Some systems (notably NetBSD) will spin and spin when executing VFPv3
+// instructions on VFPv2 system (e.g. Raspberry Pi) without ever triggering
+// SIGILL, so we set a 1-second alarm to catch that case.
+int
+xtryexecfunc(void (*f)(void))
+{
+	int r;
+	r = 0;
+	signal(SIGILL, sigillhand);
+	signal(SIGALRM, sigillhand);
+	alarm(1);
+	if(sigsetjmp(sigill_jmpbuf, 1) == 0) {
+		f();
+		r = 1;
+	}
+	signal(SIGILL, SIG_DFL);
+	alarm(0);
+	signal(SIGALRM, SIG_DFL);
+	return r;
+}
+
+// SIGILL handler helper
+static void
+sigillhand(int signum)
+{
+	USED(signum);
+	siglongjmp(sigill_jmpbuf, 1);
+}
+
+static void
+__cpuid(int dst[4], int ax)
+{
+#ifdef __i386__
+	// we need to avoid ebx on i386 (esp. when -fPIC).
+	asm volatile(
+		"mov %%ebx, %%edi\n\t"
+		"cpuid\n\t"
+		"xchgl %%ebx, %%edi"
+		: "=a" (dst[0]), "=D" (dst[1]), "=c" (dst[2]), "=d" (dst[3])
+		: "0" (ax));
+#elif defined(__x86_64__)
+	asm volatile("cpuid"
+		: "=a" (dst[0]), "=b" (dst[1]), "=c" (dst[2]), "=d" (dst[3])
+		: "0" (ax));
+#else
+	dst[0] = dst[1] = dst[2] = dst[3] = 0;
+#endif
+}
+
+bool
+cansse2(void)
+{
+	int info[4];
+	
+	__cpuid(info, 1);
+	return (info[3] & (1<<26)) != 0;	// SSE2
 }
 
 #endif // PLAN9

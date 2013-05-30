@@ -87,7 +87,8 @@ case "$1" in
 -syscalls)
 	for i in zsyscall*go
 	do
-		sed 1q $i | sed 's;^// ;;' | sh | gofmt >_$i && mv _$i $i
+		sed 1q $i | sed 's;^// ;;' | sh > _$i && gofmt < _$i > $i
+		rm _$i
 	done
 	exit 0
 	;;
@@ -131,6 +132,12 @@ freebsd_amd64)
 	mksysnum="curl -s 'http://svn.freebsd.org/base/head/sys/kern/syscalls.master' | ./mksysnum_freebsd.pl"
 	mktypes="GOARCH=$GOARCH go tool cgo -godefs"
 	;;
+freebsd_arm)
+	mkerrors="$mkerrors"
+	mksyscall="./mksyscall.pl -l32 -arm"
+	mksysnum="curl -s 'http://svn.freebsd.org/base/head/sys/kern/syscalls.master' | ./mksysnum_freebsd.pl"
+	mktypes="GOARCH=$GOARCH go tool cgo -godefs"
+	;;
 linux_386)
 	mkerrors="$mkerrors -m32"
 	mksyscall="./mksyscall.pl -l32"
@@ -138,8 +145,13 @@ linux_386)
 	mktypes="GOARCH=$GOARCH go tool cgo -godefs"
 	;;
 linux_amd64)
+	unistd_h=$(ls -1 /usr/include/asm/unistd_64.h /usr/include/x86_64-linux-gnu/asm/unistd_64.h 2>/dev/null | head -1)
+	if [ "$unistd_h" = "" ]; then
+		echo >&2 cannot find unistd_64.h
+		exit 1
+	fi
 	mkerrors="$mkerrors -m64"
-	mksysnum="./mksysnum_linux.pl /usr/include/asm/unistd_64.h"
+	mksysnum="./mksysnum_linux.pl $unistd_h"
 	mktypes="GOARCH=$GOARCH go tool cgo -godefs"
 	;;
 linux_arm)

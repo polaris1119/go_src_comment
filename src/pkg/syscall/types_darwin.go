@@ -20,6 +20,7 @@ package syscall
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <termios.h>
 #include <unistd.h>
 #include <mach/mach.h>
 #include <mach/message.h>
@@ -149,6 +150,8 @@ type Msghdr C.struct_msghdr
 
 type Cmsghdr C.struct_cmsghdr
 
+type Inet4Pktinfo C.struct_in_pktinfo
+
 type Inet6Pktinfo C.struct_in6_pktinfo
 
 const (
@@ -162,6 +165,7 @@ const (
 	SizeofIPv6Mreq         = C.sizeof_struct_ipv6_mreq
 	SizeofMsghdr           = C.sizeof_struct_msghdr
 	SizeofCmsghdr          = C.sizeof_struct_cmsghdr
+	SizeofInet4Pktinfo     = C.sizeof_struct_in_pktinfo
 	SizeofInet6Pktinfo     = C.sizeof_struct_in6_pktinfo
 )
 
@@ -226,3 +230,7 @@ type BpfProgram C.struct_bpf_program
 type BpfInsn C.struct_bpf_insn
 
 type BpfHdr C.struct_bpf_hdr
+
+// Terminal handling
+
+type Termios C.struct_termios

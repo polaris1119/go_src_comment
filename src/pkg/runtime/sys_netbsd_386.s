@@ -12,14 +12,29 @@
 TEXT runtime·exit(SB),7,$-4
 	MOVL	$1, AX
 	INT	$0x80
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
 TEXT runtime·exit1(SB),7,$-4
-	MOVL	$302, AX		// sys_threxit
+	MOVL	$310, AX		// sys__lwp_exit
 	INT	$0x80
 	JAE	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·open(SB),7,$-4
+	MOVL	$5, AX
+	INT	$0x80
+	RET
+
+TEXT runtime·close(SB),7,$-4
+	MOVL	$6, AX
+	INT	$0x80
+	RET
+
+TEXT runtime·read(SB),7,$-4
+	MOVL	$3, AX
+	INT	$0x80
 	RET
 
 TEXT runtime·write(SB),7,$-4
@@ -27,31 +42,33 @@ TEXT runtime·write(SB),7,$-4
 	INT	$0x80
 	RET
 
-TEXT runtime·usleep(SB),7,$20
+TEXT runtime·usleep(SB),7,$24
 	MOVL	$0, DX
 	MOVL	usec+0(FP), AX
 	MOVL	$1000000, CX
 	DIVL	CX
-	MOVL	AX, 12(SP)		// tv_sec
+	MOVL	AX, 12(SP)		// tv_sec - l32
+	MOVL	$0, 16(SP)		// tv_sec - h32
 	MOVL	$1000, AX
 	MULL	DX
-	MOVL	AX, 16(SP)		// tv_nsec
+	MOVL	AX, 20(SP)		// tv_nsec
 
 	MOVL	$0, 0(SP)
 	LEAL	12(SP), AX
 	MOVL	AX, 4(SP)		// arg 1 - rqtp
 	MOVL	$0, 8(SP)		// arg 2 - rmtp
-	MOVL	$240, AX		// sys_nanosleep
+	MOVL	$430, AX		// sys_nanosleep
 	INT	$0x80
 	RET
 
-TEXT runtime·raisesigpipe(SB),7,$12
-	MOVL	$299, AX		// sys_getthrid
+TEXT runtime·raise(SB),7,$12
+	MOVL	$311, AX		// sys__lwp_self
 	INT	$0x80
 	MOVL	$0, 0(SP)
-	MOVL	AX, 4(SP)		// arg 1 - pid
-	MOVL	$13, 8(SP)		// arg 2 - signum == SIGPIPE
-	MOVL	$37, AX			// sys_kill
+	MOVL	AX, 4(SP)		// arg 1 - target
+	MOVL	sig+0(FP), AX
+	MOVL	AX, 8(SP)		// arg 2 - signo
+	MOVL	$318, AX		// sys__lwp_kill
 	INT	$0x80
 	RET
 
@@ -67,72 +84,110 @@ TEXT runtime·mmap(SB),7,$36
 	MOVL	$0, AX
 	STOSL				// arg 6 - pad
 	MOVSL				// arg 7 - offset
-	MOVL	$0, AX			// top 64 bits of file offset
+	MOVL	$0, AX			// top 32 bits of file offset
 	STOSL
 	MOVL	$197, AX		// sys_mmap
 	INT	$0x80
-	JCC	2(PC)
-	NEGL	AX
 	RET
 
 TEXT runtime·munmap(SB),7,$-4
 	MOVL	$73, AX			// sys_munmap
 	INT	$0x80
 	JAE	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·madvise(SB),7,$-4
+	MOVL	$75, AX			// sys_madvise
+	INT	$0x80
+	// ignore failure - maybe pages are locked
 	RET
 
 TEXT runtime·setitimer(SB),7,$-4
-	MOVL	$83, AX
+	MOVL	$425, AX		// sys_setitimer
 	INT	$0x80
 	RET
 
 // func now() (sec int64, nsec int32)
 TEXT time·now(SB), 7, $32
-	MOVL	$116, AX
 	LEAL	12(SP), BX
-	MOVL	BX, 4(SP)
-	MOVL	$0, 8(SP)
+	MOVL	$0, 4(SP)		// arg 1 - clock_id
+	MOVL	BX, 8(SP)		// arg 2 - tp
+	MOVL	$427, AX		// sys_clock_gettime
 	INT	$0x80
-	MOVL	12(SP), AX		// sec
-	MOVL	16(SP), BX		// usec
 
-	// sec is in AX, usec in BX
+	MOVL	12(SP), AX		// sec - l32
 	MOVL	AX, sec+0(FP)
-	MOVL	$0, sec+4(FP)
-	IMULL	$1000, BX
+	MOVL	16(SP), AX		// sec - h32
+	MOVL	AX, sec+4(FP)
+
+	MOVL	20(SP), BX		// nsec
 	MOVL	BX, nsec+8(FP)
 	RET
 
 // int64 nanotime(void) so really
 // void nanotime(int64 *nsec)
 TEXT runtime·nanotime(SB),7,$32
-	MOVL	$116, AX
 	LEAL	12(SP), BX
-	MOVL	BX, 4(SP)
-	MOVL	$0, 8(SP)
+	MOVL	$0, 4(SP)		// arg 1 - clock_id
+	MOVL	BX, 8(SP)		// arg 2 - tp
+	MOVL	$427, AX		// sys_clock_gettime
 	INT	$0x80
-	MOVL	12(SP), AX		// sec
-	MOVL	16(SP), BX		// usec
 
-	// sec is in AX, usec in BX
-	// convert to DX:AX nsec
-	MOVL	$1000000000, CX
-	MULL	CX
-	IMULL	$1000, BX
+	MOVL	16(SP), CX		// sec - h32
+	IMULL	$1000000000, CX
+
+	MOVL	12(SP), AX		// sec - l32
+	MOVL	$1000000000, BX
+	MULL	BX			// result in dx:ax
+
+	MOVL	20(SP), BX		// nsec
 	ADDL	BX, AX
-	ADCL	$0, DX
-	
+	ADCL	CX, DX			// add high bits with carry
+
 	MOVL	ret+0(FP), DI
 	MOVL	AX, 0(DI)
 	MOVL	DX, 4(DI)
 	RET
 
-TEXT runtime·sigaction(SB),7,$-4
-	MOVL	$46, AX			// sys_sigaction
+TEXT runtime·getcontext(SB),7,$-4
+	MOVL	$307, AX		// sys_getcontext
 	INT	$0x80
 	JAE	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·sigprocmask(SB),7,$-4
+	MOVL	$293, AX		// sys_sigprocmask
+	INT	$0x80
+	JAE	2(PC)
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·sigreturn_tramp(SB),7,$0
+	LEAL	140(SP), AX		// Load address of ucontext
+	MOVL	AX, 4(SP)
+	MOVL	$308, AX		// sys_setcontext
+	INT	$0x80
+	MOVL	$-1, 4(SP)		// Something failed...
+	MOVL	$1, AX			// sys_exit
+	INT	$0x80
+
+TEXT runtime·sigaction(SB),7,$24
+	LEAL	arg0+0(FP), SI
+	LEAL	4(SP), DI
+	CLD
+	MOVSL				// arg 1 - sig
+	MOVSL				// arg 2 - act
+	MOVSL				// arg 3 - oact
+	LEAL	runtime·sigreturn_tramp(SB), AX
+	STOSL				// arg 4 - tramp
+	MOVL	$2, AX
+	STOSL				// arg 5 - vers
+	MOVL	$340, AX		// sys___sigaction_sigtramp
+	INT	$0x80
+	JAE	2(PC)
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
 TEXT runtime·sigtramp(SB),7,$44
@@ -141,13 +196,16 @@ TEXT runtime·sigtramp(SB),7,$44
 	// check that m exists
 	MOVL	m(CX), BX
 	CMPL	BX, $0
-	JNE	2(PC)
+	JNE	5(PC)
+	MOVL	signo+0(FP), BX
+	MOVL	BX, 0(SP)
 	CALL	runtime·badsignal(SB)
+	RET
 
 	// save g
 	MOVL	g(CX), DI
 	MOVL	DI, 20(SP)
-	
+
 	// g = m->gsignal
 	MOVL	m_gsignal(BX), BX
 	MOVL	BX, g(CX)
@@ -167,67 +225,24 @@ TEXT runtime·sigtramp(SB),7,$44
 	get_tls(CX)
 	MOVL	20(SP), BX
 	MOVL	BX, g(CX)
-	
-	// call sigreturn
-	MOVL	context+8(FP), AX
-	MOVL	$0, 0(SP)		// syscall gap
-	MOVL	AX, 4(SP)		// arg 1 - sigcontext
-	MOVL	$103, AX		// sys_sigreturn
-	INT	$0x80
-	MOVL	$0xf1, 0xf1  // crash
 	RET
 
-// int32 rfork_thread(int32 flags, void *stack, M *m, G *g, void (*fn)(void));
-TEXT runtime·rfork_thread(SB),7,$8
-	MOVL	flags+8(SP), AX
-	MOVL	stack+12(SP), CX
-
-	// Copy m, g, fn off parent stack for use by child.
-	SUBL	$16, CX
-	MOVL	mm+16(SP), SI
-	MOVL	SI, 0(CX)
-	MOVL	gg+20(SP), SI
-	MOVL	SI, 4(CX)
-	MOVL	fn+24(SP), SI
-	MOVL	SI, 8(CX)
-	MOVL	$1234, 12(CX)
-	MOVL	CX, SI
-
-	MOVL	$0, 0(SP)		// syscall gap
-	MOVL	AX, 4(SP)		// arg 1 - flags
-	MOVL	$251, AX		// sys_rfork
+// int32 lwp_create(void *context, uintptr flags, void *lwpid);
+TEXT runtime·lwp_create(SB),7,$16
+	MOVL	$0, 0(SP)
+	MOVL	context+0(FP), AX
+	MOVL	AX, 4(SP)		// arg 1 - context
+	MOVL	flags+4(FP), AX
+	MOVL	AX, 8(SP)		// arg 2 - flags
+	MOVL	lwpid+8(FP), AX
+	MOVL	AX, 12(SP)		// arg 3 - lwpid
+	MOVL	$309, AX		// sys__lwp_create
 	INT	$0x80
-
-	// Return if rfork syscall failed
-	JCC	4(PC)
+	JCC	2(PC)
 	NEGL	AX
-	MOVL	AX, 48(SP)
 	RET
 
-	// In parent, return.
-	CMPL	AX, $0
-	JEQ	3(PC)
-	MOVL	AX, 48(SP)
-	RET
-
-	// In child, on new stack.
-	MOVL    SI, SP
-
-	// Paranoia: check that SP is as we expect.
-	MOVL	12(SP), BP
-	CMPL	BP, $1234
-	JEQ	2(PC)
-	INT	$3
-
-	// Reload registers
-	MOVL	0(SP), BX		// m
-	MOVL	4(SP), DX		// g
-	MOVL	8(SP), SI		// fn
-
-	// Initialize m->procid to thread ID
-	MOVL	$299, AX		// sys_getthrid
-	INT	$0x80
-	MOVL	AX, m_procid(BX)
+TEXT runtime·lwp_tramp(SB),7,$0
 
 	// Set FS to point at m->tls
 	LEAL	m_tls(BX), BP
@@ -236,7 +251,7 @@ TEXT runtime·rfork_thread(SB),7,$8
 	CALL	runtime·settls(SB)
 	POPL	AX
 	POPAL
-	
+
 	// Now segment is established.  Initialize m, g.
 	get_tls(AX)
 	MOVL	DX, g(AX)
@@ -259,7 +274,7 @@ TEXT runtime·rfork_thread(SB),7,$8
 	RET
 
 TEXT runtime·sigaltstack(SB),7,$-8
-	MOVL	$288, AX		// sys_sigaltstack
+	MOVL	$281, AX		// sys___sigaltstack14
 	MOVL	new+4(SP), BX
 	MOVL	old+8(SP), CX
 	INT	$0x80
@@ -277,30 +292,33 @@ TEXT runtime·setldt(SB),7,$8
 
 TEXT runtime·settls(SB),7,$16
 	// adjust for ELF: wants to use -8(GS) and -4(GS) for g and m
-	MOVL	20(SP), CX
+	MOVL	base+0(FP), CX
 	ADDL	$8, CX
-	MOVL	CX, 0(CX)
 	MOVL	$0, 0(SP)		// syscall gap
-	MOVL	$9, 4(SP)		// I386_SET_GSBASE (machine/sysarch.h)
-	MOVL	CX, 8(SP)		// pointer to base
-	MOVL	$165, AX		// sys_sysarch
+	MOVL	CX, 4(SP)		// arg 1 - ptr
+	MOVL	$317, AX		// sys__lwp_setprivate
 	INT	$0x80
 	JCC	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
 TEXT runtime·osyield(SB),7,$-4
-	MOVL	$298, AX		// sys_sched_yield
+	MOVL	$350, AX		// sys_sched_yield
 	INT	$0x80
 	RET
 
-TEXT runtime·thrsleep(SB),7,$-4
-	MOVL	$300, AX		// sys_thrsleep
+TEXT runtime·lwp_park(SB),7,$-4
+	MOVL	$434, AX		// sys__lwp_park
 	INT	$0x80
 	RET
 
-TEXT runtime·thrwakeup(SB),7,$-4
-	MOVL	$301, AX		// sys_thrwakeup
+TEXT runtime·lwp_unpark(SB),7,$-4
+	MOVL	$321, AX		// sys__lwp_unpark
+	INT	$0x80
+	RET
+
+TEXT runtime·lwp_self(SB),7,$-4
+	MOVL	$311, AX		// sys__lwp_self
 	INT	$0x80
 	RET
 

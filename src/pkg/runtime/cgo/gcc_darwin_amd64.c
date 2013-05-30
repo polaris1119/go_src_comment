@@ -72,7 +72,7 @@ inittls(void)
 }
 
 void
-xinitcgo(G *g)
+x_cgo_init(G *g)
 {
 	pthread_attr_t attr;
 	size_t size;
@@ -85,10 +85,9 @@ xinitcgo(G *g)
 	inittls();
 }
 
-void (*initcgo)(G*) = xinitcgo;
 
 void
-libcgo_sys_thread_start(ThreadStart *ts)
+_cgo_sys_thread_start(ThreadStart *ts)
 {
 	pthread_attr_t attr;
 	sigset_t ign, oset;
@@ -97,14 +96,14 @@ libcgo_sys_thread_start(ThreadStart *ts)
 	int err;
 
 	sigfillset(&ign);
-	sigprocmask(SIG_SETMASK, &ign, &oset);
+	pthread_sigmask(SIG_SETMASK, &ign, &oset);
 
 	pthread_attr_init(&attr);
 	pthread_attr_getstacksize(&attr, &size);
 	ts->g->stackguard = size;
 	err = pthread_create(&p, &attr, threadentry, ts);
 
-	sigprocmask(SIG_SETMASK, &oset, nil);
+	pthread_sigmask(SIG_SETMASK, &oset, nil);
 
 	if (err != 0) {
 		fprintf(stderr, "runtime/cgo: pthread_create failed: %s\n", strerror(err));
@@ -123,7 +122,7 @@ threadentry(void *v)
 	ts.g->stackbase = (uintptr)&ts;
 
 	/*
-	 * libcgo_sys_thread_start set stackguard to stack size;
+	 * _cgo_sys_thread_start set stackguard to stack size;
 	 * change to actual guard pointer.
 	 */
 	ts.g->stackguard = (uintptr)&ts - ts.g->stackguard + 4096;

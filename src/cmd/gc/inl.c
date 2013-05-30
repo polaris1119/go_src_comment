@@ -13,7 +13,7 @@
 //      0: disabled
 //      1: 40-nodes leaf functions, oneliners, lazy typechecking (default)
 //      2: early typechecking of all imported bodies 
-//      3: 
+//      3: allow variadic functions
 //      4: allow non-leaf functions , (breaks runtime.Caller)
 //      5: transitive inlining
 //
@@ -39,9 +39,10 @@ static int	ishairylist(NodeList *ll, int *budget);
 // Used by inlcalls
 static void	inlnodelist(NodeList *l);
 static void	inlnode(Node **np);
-static void	mkinlcall(Node **np, Node *fn);
+static void	mkinlcall(Node **np, Node *fn, int isddd);
 static Node*	inlvar(Node *n);
 static Node*	retvar(Type *n, int i);
+static Node*	argvar(Type *n, int i);
 static Node*	newlabel(void);
 static Node*	inlsubst(Node *n);
 static NodeList* inlsubstlist(NodeList *l);
@@ -82,20 +83,18 @@ typecheckinl(Node *fn)
 	Pkg *pkg;
 	int save_safemode, lno;
 
-	if(fn->typecheck)
-		return;
-
 	lno = setlineno(fn);
+
+	// typecheckinl is only for imported functions;
+	// their bodies may refer to unsafe as long as the package
+	// was marked safe during import (which was checked then).
+	// the ->inl of a local function has been typechecked before caninl copied it.
+	pkg = fnpkg(fn);
+	if (pkg == localpkg || pkg == nil)
+		return; // typecheckinl on local function
 
 	if (debug['m']>2)
 		print("typecheck import [%S] %lN { %#H }\n", fn->sym, fn, fn->inl);
-
-	// typecheckinl is only used for imported functions;
-	// their bodies may refer to unsafe as long as the package
-	// was marked safe during import (which was checked then).
-	pkg = fnpkg(fn);
-	if (pkg == localpkg || pkg == nil)
-		fatal("typecheckinl on local function %lN", fn);
 
 	save_safemode = safemode;
 	safemode = 0;
@@ -103,7 +102,6 @@ typecheckinl(Node *fn)
 	savefn = curfn;
 	curfn = fn;
 	typechecklist(fn->inl, Etop);
-	fn->typecheck = 1;
 	curfn = savefn;
 
 	safemode = save_safemode;
@@ -111,10 +109,9 @@ typecheckinl(Node *fn)
 	lineno = lno;
 }
 
-// Caninl determines whether fn is inlineable. Currently that means:
-// fn is exactly 1 statement, either a return or an assignment, and
-// some temporary constraints marked TODO.  If fn is inlineable, saves
-// fn->nbody in fn->inl and substitutes it with a copy.
+// Caninl determines whether fn is inlineable.
+// If so, caninl saves fn->nbody in fn->inl and substitutes it with a copy.
+// fn and ->nbody will already have been typechecked.
 void
 caninl(Node *fn)
 {
@@ -131,10 +128,14 @@ caninl(Node *fn)
 	if(fn->nbody == nil)
 		return;
 
+	if(fn->typecheck == 0)
+		fatal("caninl on non-typechecked function %N", fn);
+
 	// can't handle ... args yet
-	for(t=fn->type->type->down->down->type; t; t=t->down)
-		if(t->isddd)
-			return;
+	if(debug['l'] < 3)
+		for(t=fn->type->type->down->down->type; t; t=t->down)
+			if(t->isddd)
+				return;
 
 	budget = 40;  // allowed hairyness
 	if(ishairylist(fn->nbody, &budget))
@@ -145,8 +146,6 @@ caninl(Node *fn)
 
 	fn->nname->inl = fn->nbody;
 	fn->nbody = inlcopylist(fn->nname->inl);
-	// nbody will have been typechecked, so we can set this:
-	fn->typecheck = 1;
 
 	// hack, TODO, check for better way to link method nodes back to the thing with the ->inl
 	// this is so export can find the body of a method
@@ -189,24 +188,17 @@ ishairy(Node *n, int *budget)
 		break;
 
 	case OCLOSURE:
+	case OCALLPART:
 	case ORANGE:
 	case OFOR:
 	case OSELECT:
 	case OSWITCH:
 	case OPROC:
 	case ODEFER:
-	case ODCL:	// declares locals as globals b/c of @"". qualification
 	case ODCLTYPE:  // can't print yet
 	case ODCLCONST:  // can't print yet
 		return 1;
 
-		break;
-	case OAS:
-		// x = <N> zero initializing assignments aren't representible in export yet.
-		// alternatively we may just skip them in printing and hope their DCL printed
-		// as a var will regenerate it
-		if(n->right == N)
-			return 1;
 		break;
 	}
 
@@ -366,8 +358,8 @@ inlnode(Node **np)
 		}
 
 	case OCLOSURE:
-		// TODO do them here instead of in lex.c phase 6b, so escape analysis
-		// can avoid more heapmoves.
+		// TODO do them here (or earlier),
+		// so escape analysis can avoid more heapmoves.
 		return;
 	}
 
@@ -464,10 +456,10 @@ inlnode(Node **np)
 		if(debug['m']>3)
 			print("%L:call to func %+N\n", n->lineno, n->left);
 		if(n->left->inl)	// normal case
-			mkinlcall(np, n->left);
+			mkinlcall(np, n->left, n->isddd);
 		else if(n->left->op == ONAME && n->left->left && n->left->left->op == OTYPE && n->left->right &&  n->left->right->op == ONAME)  // methods called as functions
 			if(n->left->sym->def)
-				mkinlcall(np, n->left->sym->def);
+				mkinlcall(np, n->left->sym->def, n->isddd);
 		break;
 
 	case OCALLMETH:
@@ -480,7 +472,7 @@ inlnode(Node **np)
 		if(n->left->type->nname == N) 
 			fatal("no function definition for [%p] %+T\n", n->left->type, n->left->type);
 
-		mkinlcall(np, n->left->type->nname);
+		mkinlcall(np, n->left->type->nname, n->isddd);
 
 		break;
 	}
@@ -488,10 +480,10 @@ inlnode(Node **np)
 	lineno = lno;
 }
 
-static void	mkinlcall1(Node **np, Node *fn);
+static void	mkinlcall1(Node **np, Node *fn, int isddd);
 
 static void
-mkinlcall(Node **np, Node *fn)
+mkinlcall(Node **np, Node *fn, int isddd)
 {
 	int save_safemode;
 	Pkg *pkg;
@@ -503,7 +495,7 @@ mkinlcall(Node **np, Node *fn)
 	pkg = fnpkg(fn);
 	if(pkg != localpkg && pkg != nil)
 		safemode = 0;
-	mkinlcall1(np, fn);
+	mkinlcall1(np, fn, isddd);
 	safemode = save_safemode;
 }
 
@@ -519,17 +511,25 @@ tinlvar(Type *t)
 	return nblank;
 }
 
+static int inlgen;
+
 // if *np is a call, and fn is a function with an inlinable body, substitute *np with an OINLCALL.
 // On return ninit has the parameter assignments, the nbody is the
 // inlined function body and list, rlist contain the input, output
 // parameters.
 static void
-mkinlcall1(Node **np, Node *fn)
+mkinlcall1(Node **np, Node *fn, int isddd)
 {
 	int i;
+	int chkargcount;
 	Node *n, *call, *saveinlfn, *as, *m;
 	NodeList *dcl, *ll, *ninit, *body;
 	Type *t;
+	// For variadic fn.
+	int variadic, varargcount, multiret;
+	Node *vararg;
+	NodeList *varargs;
+	Type *varargtype, *vararrtype;
 
 	if (fn->inl == nil)
 		return;
@@ -556,6 +556,8 @@ mkinlcall1(Node **np, Node *fn)
 
 	ninit = n->ninit;
 
+//dumplist("ninit pre", ninit);
+
 	if (fn->defn) // local function
 		dcl = fn->defn->dcl;
 	else // imported function
@@ -564,70 +566,168 @@ mkinlcall1(Node **np, Node *fn)
 	inlretvars = nil;
 	i = 0;
 	// Make temp names to use instead of the originals
-	for(ll = dcl; ll; ll=ll->next)
+	for(ll = dcl; ll; ll=ll->next) {
+		if(ll->n->class == PPARAMOUT)  // return values handled below.
+			continue;
 		if(ll->n->op == ONAME) {
 			ll->n->inlvar = inlvar(ll->n);
-			ninit = list(ninit, nod(ODCL, ll->n->inlvar, N));  // otherwise gen won't emit the allocations for heapallocs
-			if (ll->n->class == PPARAMOUT)  // we rely on the order being correct here
-				inlretvars = list(inlretvars, ll->n->inlvar);
+			// Typecheck because inlvar is not necessarily a function parameter.
+			typecheck(&ll->n->inlvar, Erv);
+			if ((ll->n->class&~PHEAP) != PAUTO)
+				ninit = list(ninit, nod(ODCL, ll->n->inlvar, N));  // otherwise gen won't emit the allocations for heapallocs
 		}
+	}
 
-	// anonymous return values, synthesize names for use in assignment that replaces return
-	if(inlretvars == nil && fn->type->outtuple > 0)
-		for(t = getoutargx(fn->type)->type; t; t = t->down) {
+	// temporaries for return values.
+	for(t = getoutargx(fn->type)->type; t; t = t->down) {
+		if(t != T && t->nname != N && !isblank(t->nname)) {
+			m = inlvar(t->nname);
+			typecheck(&m, Erv);
+			t->nname->inlvar = m;
+		} else {
+			// anonymous return values, synthesize names for use in assignment that replaces return
 			m = retvar(t, i++);
-			ninit = list(ninit, nod(ODCL, m, N));
-			inlretvars = list(inlretvars, m);
 		}
+		ninit = list(ninit, nod(ODCL, m, N));
+		inlretvars = list(inlretvars, m);
+	}
 
-	// assign arguments to the parameters' temp names
-	as = N;
-	if(fn->type->thistuple) {
+	// assign receiver.
+	if(fn->type->thistuple && n->left->op == ODOTMETH) {
+		// method call with a receiver.
 		t = getthisx(fn->type)->type;
 		if(t != T && t->nname != N && !isblank(t->nname) && !t->nname->inlvar)
 			fatal("missing inlvar for %N\n", t->nname);
-
-		if(n->left->op == ODOTMETH) {
-			if(!n->left->left)
-				fatal("method call without receiver: %+N", n);
-			if(t == T)
-				fatal("method call unknown receiver type: %+N", n);
-			as = nod(OAS, tinlvar(t), n->left->left);
-		} else {  // non-method call to method
-			if(!n->list)
-				fatal("non-method call to method without first arg: %+N", n);
-			if(t != T)
-				as = nod(OAS, tinlvar(t), n->list->n);
-		}
-
+		if(!n->left->left)
+			fatal("method call without receiver: %+N", n);
+		if(t == T)
+			fatal("method call unknown receiver type: %+N", n);
+		as = nod(OAS, tinlvar(t), n->left->left);
 		if(as != N) {
 			typecheck(&as, Etop);
 			ninit = list(ninit, as);
 		}
 	}
 
-	as = nod(OAS2, N, N);
-	if(fn->type->intuple > 1 && n->list && !n->list->next) {
-		// TODO check that n->list->n is a call?
-		// TODO: non-method call to T.meth(f()) where f returns t, args...
-		as->rlist = n->list;
-		for(t = getinargx(fn->type)->type; t; t=t->down)
-			as->list = list(as->list, tinlvar(t));		
-	} else {
-		ll = n->list;
-		if(fn->type->thistuple && n->left->op != ODOTMETH) // non method call to method
-			ll=ll->next;  // was handled above in if(thistuple)
+	// check if inlined function is variadic.
+	variadic = 0;
+	varargtype = T;
+	varargcount = 0;
+	for(t=fn->type->type->down->down->type; t; t=t->down) {
+		if(t->isddd) {
+			variadic = 1;
+			varargtype = t->type;
+		}
+	}
+	// but if argument is dotted too forget about variadicity.
+	if(variadic && isddd)
+		variadic = 0;
 
-		for(t = getinargx(fn->type)->type; t && ll; t=t->down) {
+	// check if argument is actually a returned tuple from call.
+	multiret = 0;
+	if(n->list && !n->list->next) {
+		switch(n->list->n->op) {
+		case OCALL:
+		case OCALLFUNC:
+		case OCALLINTER:
+		case OCALLMETH:
+			if(n->list->n->left->type->outtuple > 1)
+				multiret = n->list->n->left->type->outtuple-1;
+		}
+	}
+
+	if(variadic) {
+		varargcount = count(n->list) + multiret;
+		if(n->left->op != ODOTMETH)
+			varargcount -= fn->type->thistuple;
+		varargcount -= fn->type->intuple - 1;
+	}
+
+	// assign arguments to the parameters' temp names
+	as = nod(OAS2, N, N);
+	as->rlist = n->list;
+	ll = n->list;
+
+	// TODO: if len(nlist) == 1 but multiple args, check that n->list->n is a call?
+	if(fn->type->thistuple && n->left->op != ODOTMETH) {
+		// non-method call to method
+		if(!n->list)
+			fatal("non-method call to method without first arg: %+N", n);
+		// append receiver inlvar to LHS.
+		t = getthisx(fn->type)->type;
+		if(t != T && t->nname != N && !isblank(t->nname) && !t->nname->inlvar)
+			fatal("missing inlvar for %N\n", t->nname);
+		if(t == T)
+			fatal("method call unknown receiver type: %+N", n);
+		as->list = list(as->list, tinlvar(t));
+		ll = ll->next; // track argument count.
+	}
+
+	// append ordinary arguments to LHS.
+	chkargcount = n->list && n->list->next;
+	vararg = N;    // the slice argument to a variadic call
+	varargs = nil; // the list of LHS names to put in vararg.
+	if(!chkargcount) {
+		// 0 or 1 expression on RHS.
+		for(t = getinargx(fn->type)->type; t; t=t->down) {
+			if(variadic && t->isddd) {
+				vararg = tinlvar(t);
+				for(i=0; i<varargcount && ll; i++) {
+					m = argvar(varargtype, i);
+					varargs = list(varargs, m);
+					as->list = list(as->list, m);
+				}
+				break;
+			}
 			as->list = list(as->list, tinlvar(t));
-			as->rlist = list(as->rlist, ll->n);
+		}
+	} else {
+		// match arguments except final variadic (unless the call is dotted itself)
+		for(t = getinargx(fn->type)->type; t;) {
+			if(!ll)
+				break;
+			if(variadic && t->isddd)
+				break;
+			as->list = list(as->list, tinlvar(t));
+			t=t->down;
 			ll=ll->next;
+		}
+		// match varargcount arguments with variadic parameters.
+		if(variadic && t && t->isddd) {
+			vararg = tinlvar(t);
+			for(i=0; i<varargcount && ll; i++) {
+				m = argvar(varargtype, i);
+				varargs = list(varargs, m);
+				as->list = list(as->list, m);
+				ll=ll->next;
+			}
+			if(i==varargcount)
+				t=t->down;
 		}
 		if(ll || t)
 			fatal("arg count mismatch: %#T  vs %,H\n",  getinargx(fn->type), n->list);
 	}
 
 	if (as->rlist) {
+		typecheck(&as, Etop);
+		ninit = list(ninit, as);
+	}
+
+	// turn the variadic args into a slice.
+	if(variadic) {
+		as = nod(OAS, vararg, N);
+		if(!varargcount) {
+			as->right = nodnil();
+			as->right->type = varargtype;
+		} else {
+			vararrtype = typ(TARRAY);
+			vararrtype->type = varargtype->type;
+			vararrtype->bound = varargcount;
+
+			as->right = nod(OCOMPLIT, N, typenod(varargtype));
+			as->right->list = varargs;
+			as->right = nod(OSLICE, as->right, nod(OKEY, N, N));
+		}
 		typecheck(&as, Etop);
 		ninit = list(ninit, as);
 	}
@@ -640,12 +740,14 @@ mkinlcall1(Node **np, Node *fn)
 	}
 
 	inlretlabel = newlabel();
+	inlgen++;
 	body = inlsubstlist(fn->inl);
 
 	body = list(body, nod(OGOTO, inlretlabel, N));	// avoid 'not used' when function doesnt have return
 	body = list(body, nod(OLABEL, inlretlabel, N));
 
 	typechecklist(body, Etop);
+//dumplist("ninit post", ninit);
 
 	call = nod(OINLCALL, N, N);
 	call->ninit = ninit;
@@ -655,6 +757,7 @@ mkinlcall1(Node **np, Node *fn)
 	call->typecheck = 1;
 
 	setlno(call, n->lineno);
+//dumplist("call body", body);
 
 	*np = call;
 
@@ -695,6 +798,12 @@ inlvar(Node *var)
 	n->class = PAUTO;
 	n->used = 1;
 	n->curfn = curfn;   // the calling function, not the called one
+
+	// esc pass wont run if we're inlining into a iface wrapper
+	// luckily, we can steal the results from the target func
+	if(var->esc == EscHeap)
+		addrescapes(n);
+
 	curfn->dcl = list(curfn->dcl, n);
 	return n;
 }
@@ -705,7 +814,24 @@ retvar(Type *t, int i)
 {
 	Node *n;
 
-	snprint(namebuf, sizeof(namebuf), ".r%d", i);
+	snprint(namebuf, sizeof(namebuf), "~r%d", i);
+	n = newname(lookup(namebuf));
+	n->type = t->type;
+	n->class = PAUTO;
+	n->used = 1;
+	n->curfn = curfn;   // the calling function, not the called one
+	curfn->dcl = list(curfn->dcl, n);
+	return n;
+}
+
+// Synthesize a variable to store the inlined function's arguments
+// when they come from a multiple return call.
+static Node*
+argvar(Type *t, int i)
+{
+	Node *n;
+
+	snprint(namebuf, sizeof(namebuf), "~arg%d", i);
 	n = newname(lookup(namebuf));
 	n->type = t->type;
 	n->class = PAUTO;
@@ -746,6 +872,7 @@ inlsubstlist(NodeList *ll)
 static Node*
 inlsubst(Node *n)
 {
+	char *p;
 	Node *m, *as;
 	NodeList *ll;
 
@@ -788,6 +915,16 @@ inlsubst(Node *n)
 		typecheck(&m, Etop);
 //		dump("Return after substitution", m);
 		return m;
+	
+	case OGOTO:
+	case OLABEL:
+		m = nod(OXXX, N, N);
+		*m = *n;
+		m->ninit = nil;
+		p = smprint("%s·%d", n->left->sym->name, inlgen);	
+		m->left = newname(lookup(p));
+		free(p);
+		return m;	
 	}
 
 

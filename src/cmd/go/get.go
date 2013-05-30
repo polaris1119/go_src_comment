@@ -18,14 +18,11 @@ import (
 )
 
 var cmdGet = &Command{
-	UsageLine: "get [-a] [-d] [-fix] [-n] [-p n] [-u] [-v] [-x] [packages]",
+	UsageLine: "get [-d] [-fix] [-u] [build flags] [packages]",
 	Short:     "download and install packages and dependencies",
 	Long: `
 Get downloads and installs the packages named by the import paths,
 along with their dependencies.
-
-The -a, -n, -v, -x, and -p flags have the same meaning as in 'go build'
-and 'go install'.  See 'go help build'.
 
 The -d flag instructs get to stop after downloading the packages; that is,
 it instructs get not to install the packages.
@@ -36,6 +33,9 @@ before resolving dependencies or building the code.
 The -u flag instructs get to use the network to update the named packages
 and their dependencies.  By default, get uses the network to check out
 missing packages but does not use it to look for updates to existing packages.
+
+Get also accepts all the flags in the 'go build' and 'go install' commands,
+to control the installation. See 'go help build'.
 
 When checking out or updating a package, get looks for a branch or tag
 that matches the locally installed version of Go. The most important
@@ -93,7 +93,7 @@ func runGet(cmd *Command, args []string) {
 	runInstall(cmd, args)
 }
 
-// downloadPath prepares the list of paths to pass to download.
+// downloadPaths prepares the list of paths to pass to download.
 // It expands ... patterns that can be expanded.  If there is no match
 // for a particular pattern, downloadPaths leaves it in the result list,
 // in the hope that we can figure out the repository from the
@@ -105,7 +105,7 @@ func downloadPaths(args []string) []string {
 		if strings.Contains(a, "...") {
 			var expand []string
 			// Use matchPackagesInFS to avoid printing
-			// warnings.  They will be printed by the 
+			// warnings.  They will be printed by the
 			// eventual call to importPaths instead.
 			if build.IsLocalImport(a) {
 				expand = matchPackagesInFS(a)
@@ -204,7 +204,7 @@ func download(arg string, stk *importStack) {
 	// due to wildcard expansion.
 	for _, p := range pkgs {
 		if *getFix {
-			run(stringList(tool("fix"), relPaths(p.gofiles)))
+			run(stringList(tool("fix"), relPaths(p.allgofiles)))
 
 			// The imports might have changed, so reload again.
 			p = reloadPackage(arg, stk)
@@ -247,16 +247,17 @@ func downloadPackage(p *Package) error {
 	}
 
 	if p.build.SrcRoot == "" {
-		// Package not found.  Put in first directory of $GOPATH or else $GOROOT.
-		// Guard against people setting GOPATH=$GOROOT.  We have to use
-		// $GOROOT's directory hierarchy (src/pkg, not just src) in that case.
-		if list := filepath.SplitList(buildContext.GOPATH); len(list) > 0 && list[0] != goroot {
-			p.build.SrcRoot = filepath.Join(list[0], "src")
-			p.build.PkgRoot = filepath.Join(list[0], "pkg")
-		} else {
-			p.build.SrcRoot = filepath.Join(goroot, "src", "pkg")
-			p.build.PkgRoot = filepath.Join(goroot, "pkg")
+		// Package not found.  Put in first directory of $GOPATH.
+		list := filepath.SplitList(buildContext.GOPATH)
+		if len(list) == 0 {
+			return fmt.Errorf("cannot download, $GOPATH not set. For more details see: go help gopath")
 		}
+		// Guard against people setting GOPATH=$GOROOT.
+		if list[0] == goroot {
+			return fmt.Errorf("cannot download, $GOPATH must not be set to $GOROOT. For more details see: go help gopath")
+		}
+		p.build.SrcRoot = filepath.Join(list[0], "src")
+		p.build.PkgRoot = filepath.Join(list[0], "pkg")
 	}
 	root := filepath.Join(p.build.SrcRoot, rootPath)
 	// If we've considered this repository already, don't do it again.

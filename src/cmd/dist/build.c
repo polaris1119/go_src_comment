@@ -16,8 +16,11 @@ char *gohostarch;
 char *gohostchar;
 char *gohostos;
 char *goos;
+char *goarm;
+char *go386;
 char *goroot = GOROOT_FINAL;
 char *goroot_final = GOROOT_FINAL;
+char *goextlinkenabled = "";
 char *workdir;
 char *tooldir;
 char *gochar;
@@ -96,6 +99,20 @@ init(void)
 	if(find(goos, okgoos, nelem(okgoos)) < 0)
 		fatal("unknown $GOOS %s", goos);
 
+	xgetenv(&b, "GOARM");
+	if(b.len == 0)
+		bwritestr(&b, xgetgoarm());
+	goarm = btake(&b);
+
+	xgetenv(&b, "GO386");
+	if(b.len == 0) {
+		if(cansse2())
+			bwritestr(&b, "sse2");
+		else
+			bwritestr(&b, "387");
+	}
+	go386 = btake(&b);
+
 	p = bpathf(&b, "%s/include/u.h", goroot);
 	if(!isfile(p)) {
 		fatal("$GOROOT is not set correctly or not exported\n"
@@ -123,9 +140,18 @@ init(void)
 	bprintf(&b, "%c", gochars[i]);
 	gochar = btake(&b);
 
+	xgetenv(&b, "GO_EXTLINK_ENABLED");
+	if(b.len > 0) {
+		goextlinkenabled = btake(&b);
+		if(!streq(goextlinkenabled, "0") && !streq(goextlinkenabled, "1"))
+			fatal("unknown $GO_EXTLINK_ENABLED %s", goextlinkenabled);
+	}
+
 	xsetenv("GOROOT", goroot);
 	xsetenv("GOARCH", goarch);
 	xsetenv("GOOS", goos);
+	xsetenv("GOARM", goarm);
+	xsetenv("GO386", go386);
 
 	// Make the environment more predictable.
 	xsetenv("LANG", "C");
@@ -147,7 +173,7 @@ static void
 rmworkdir(void)
 {
 	if(vflag > 1)
-		xprintf("rm -rf %s\n", workdir);
+		errprintf("rm -rf %s\n", workdir);
 	xremoveall(workdir);
 }
 
@@ -207,7 +233,7 @@ findgoversion(void)
 	chomp(&branch);
 
 	// What are the tags along the current branch?
-	tag = "";
+	tag = "devel";
 	rev = ".";
 	run(&b, goroot, CheckExit, "hg", "log", "-b", bstr(&branch), "-r", ".:0", "--template", "{tags} + ", nil);
 	splitfields(&tags, bstr(&b));
@@ -216,7 +242,9 @@ findgoversion(void)
 		p = tags.p[i];
 		if(streq(p, "+"))
 			nrev++;
-		if(hasprefix(p, "release.") || hasprefix(p, "weekly.") || hasprefix(p, "go")) {
+		// NOTE: Can reenable the /* */ code when we want to
+		// start reporting versions named 'weekly' again.
+		if(/*hasprefix(p, "weekly.") ||*/ hasprefix(p, "go")) {
 			tag = xstrdup(p);
 			// If this tag matches the current checkout
 			// exactly (no "+" yet), don't show extra
@@ -236,7 +264,7 @@ findgoversion(void)
 	if(rev[0]) {
 		// Tag is before the revision we're building.
 		// Add extra information.
-		run(&bmore, goroot, CheckExit, "hg", "log", "--template", " +{node|short}", "-r", rev, nil);
+		run(&bmore, goroot, CheckExit, "hg", "log", "--template", " +{node|short} {date|date}", "-r", rev, nil);
 		chomp(&bmore);
 	}
 
@@ -293,7 +321,6 @@ static char *unreleased[] = {
 	"src/cmd/cov",
 	"src/cmd/prof",
 	"src/pkg/old",
-	"src/pkg/exp",
 };
 
 // setup sets up the tree for the initial build.
@@ -378,6 +405,9 @@ setup(void)
 // gccargs is the gcc command line to use for compiling a single C file.
 static char *proto_gccargs[] = {
 	"-Wall",
+	// native Plan 9 compilers don't like non-standard prototypes
+	// so let gcc catch them.
+	"-Wstrict-prototypes",
 	"-Wno-sign-compare",
 	"-Wno-missing-braces",
 	"-Wno-parentheses",
@@ -387,7 +417,14 @@ static char *proto_gccargs[] = {
 	"-Werror",
 	"-fno-common",
 	"-ggdb",
+	"-pipe",
+#if defined(__NetBSD__) && defined(__arm__)
+	// GCC 4.5.4 (NetBSD nb1 20120916) on ARM is known to mis-optimize gc/mparith3.c
+	// Fix available at http://patchwork.ozlabs.org/patch/64562/.
+	"-O1",
+#else
 	"-O2",
+#endif
 };
 
 static Vec gccargs;
@@ -474,14 +511,7 @@ static struct {
 		"$GOROOT/pkg/obj/$GOOS_$GOARCH/libgc.a",
 	}},
 	{"cmd/5l", {
-		"../ld/data.c",
-		"../ld/elf.c",
-		"../ld/go.c",
-		"../ld/ldelf.c",
-		"../ld/ldmacho.c",
-		"../ld/ldpe.c",
-		"../ld/lib.c",
-		"../ld/symtab.c",
+		"../ld/*",
 		"enam.c",
 	}},
 	{"cmd/6l", {
@@ -535,17 +565,17 @@ static void
 install(char *dir)
 {
 	char *name, *p, *elem, *prefix, *exe;
-	bool islib, ispkg, isgo, stale;
+	bool islib, ispkg, isgo, stale, clang;
 	Buf b, b1, path;
 	Vec compile, files, link, go, missing, clean, lib, extra;
 	Time ttarg, t;
-	int i, j, k, n, doclean, targ;
+	int i, j, k, n, doclean, targ, usecpp;
 
 	if(vflag) {
 		if(!streq(goos, gohostos) || !streq(goarch, gohostarch))
-			xprintf("%s (%s/%s)\n", dir, goos, goarch);
+			errprintf("%s (%s/%s)\n", dir, goos, goarch);
 		else
-			xprintf("%s\n", dir);
+			errprintf("%s\n", dir);
 	}
 
 	binit(&b);
@@ -559,6 +589,7 @@ install(char *dir)
 	vinit(&clean);
 	vinit(&lib);
 	vinit(&extra);
+
 
 	// path = full path to dir.
 	bpathf(&path, "%s/src/%s", goroot, dir);
@@ -574,7 +605,7 @@ install(char *dir)
 	// For release, cmd/prof and cmd/cov are not included.
 	if((streq(dir, "cmd/cov") || streq(dir, "cmd/prof")) && !isdir(bstr(&path))) {
 		if(vflag > 1)
-			xprintf("skipping %s - does not exist\n", dir);
+			errprintf("skipping %s - does not exist\n", dir);
 		goto out;
 	}
 
@@ -583,12 +614,17 @@ install(char *dir)
 		xgetenv(&b, "CC");
 		if(b.len == 0)
 			bprintf(&b, "gcc");
+		clang = contains(bstr(&b), "clang");
 		splitfields(&gccargs, bstr(&b));
 		for(i=0; i<nelem(proto_gccargs); i++)
 			vadd(&gccargs, proto_gccargs[i]);
-		if(xstrstr(bstr(&b), "clang") != nil) {
-			vadd(&gccargs, "-Wno-dangling-else");
-			vadd(&gccargs, "-Wno-unused-value");
+		if(clang) {
+			// clang is too smart about unused command-line arguments
+			vadd(&gccargs, "-Qunused-arguments");
+		}
+		if(streq(gohostos, "darwin")) {
+			// golang.org/issue/5261
+			vadd(&gccargs, "-mmacosx-version-min=10.6");
 		}
 	}
 
@@ -605,7 +641,10 @@ install(char *dir)
 	if(islib) {
 		// C library.
 		vadd(&link, "ar");
-		vadd(&link, "rsc");
+		if(streq(gohostos, "plan9"))
+			vadd(&link, "rc");
+		else
+			vadd(&link, "rsc");
 		prefix = "";
 		if(!hasprefix(name, "lib"))
 			prefix = "lib";
@@ -631,14 +670,21 @@ install(char *dir)
 		vadd(&link, bpathf(&b, "%s/%s%s", tooldir, elem, exe));
 	} else {
 		// C command. Use gccargs.
-		vcopy(&link, gccargs.p, gccargs.len);
-		vadd(&link, "-o");
-		targ = link.len;
-		vadd(&link, bpathf(&b, "%s/%s%s", tooldir, name, exe));
-		if(streq(gohostarch, "amd64"))
-			vadd(&link, "-m64");
-		else if(streq(gohostarch, "386"))
-			vadd(&link, "-m32");
+		if(streq(gohostos, "plan9")) {
+			vadd(&link, bprintf(&b, "%sl", gohostchar));
+			vadd(&link, "-o");
+			targ = link.len;
+			vadd(&link, bpathf(&b, "%s/%s", tooldir, name));
+		} else {
+			vcopy(&link, gccargs.p, gccargs.len);
+			vadd(&link, "-o");
+			targ = link.len;
+			vadd(&link, bpathf(&b, "%s/%s%s", tooldir, name, exe));
+			if(streq(gohostarch, "amd64"))
+				vadd(&link, "-m64");
+			else if(streq(gohostarch, "386"))
+				vadd(&link, "-m32");
+		}
 	}
 	ttarg = mtime(link.p[targ]);
 
@@ -672,6 +718,8 @@ install(char *dir)
 				bsubst(&b1, "$GOARCH", goarch);
 				p = bstr(&b1);
 				if(hassuffix(p, ".a")) {
+					if(streq(gohostos, "plan9") && hassuffix(p, "libbio.a"))
+						continue;
 					vadd(&lib, bpathf(&b, "%s", p));
 					continue;
 				}
@@ -741,6 +789,10 @@ install(char *dir)
 	}
 	files.len = n;
 
+	// If there are no files to compile, we're done.
+	if(files.len == 0)
+		goto out;
+	
 	for(i=0; i<lib.len && !stale; i++)
 		if(mtime(lib.p[i]) > ttarg)
 			stale = 1;
@@ -754,6 +806,9 @@ install(char *dir)
 			bpathf(&b1, "%s/arch_%s.h", bstr(&path), goarch), 0);
 		copy(bpathf(&b, "%s/defs_GOOS_GOARCH.h", workdir),
 			bpathf(&b1, "%s/defs_%s_%s.h", bstr(&path), goos, goarch), 0);
+		p = bpathf(&b1, "%s/signal_%s_%s.h", bstr(&path), goos, goarch);
+		if(isfile(p))
+			copy(bpathf(&b, "%s/signal_GOOS_GOARCH.h", workdir), p, 0);
 		copy(bpathf(&b, "%s/os_GOOS.h", workdir),
 			bpathf(&b1, "%s/os_%s.h", bstr(&path), goos), 0);
 		copy(bpathf(&b, "%s/signals_GOOS.h", workdir),
@@ -767,7 +822,7 @@ install(char *dir)
 		for(j=0; j<nelem(gentab); j++) {
 			if(hasprefix(elem, gentab[j].nameprefix)) {
 				if(vflag > 1)
-					xprintf("generate %s\n", p);
+					errprintf("generate %s\n", p);
 				gentab[j].gen(bstr(&path), p);
 				// Do not add generated file to clean list.
 				// In pkg/runtime, we want to be able to
@@ -799,10 +854,10 @@ install(char *dir)
 			p = files.p[i];
 			if(!hassuffix(p, ".goc"))
 				continue;
-			// b = path/zp but with _goarch.c instead of .goc
+			// b = path/zp but with _goos_goarch.c instead of .goc
 			bprintf(&b, "%s%sz%s", bstr(&path), slash, lastelem(p));
 			b.len -= 4;
-			bwritef(&b, "_%s.c", goarch);
+			bwritef(&b, "_%s_%s.c", goos, goarch);
 			goc2c(p, bstr(&b));
 			vadd(&files, bstr(&b));
 		}
@@ -812,8 +867,22 @@ install(char *dir)
 	if((!streq(goos, gohostos) || !streq(goarch, gohostarch)) && isgo) {
 		// We've generated the right files; the go command can do the build.
 		if(vflag > 1)
-			xprintf("skip build for cross-compile %s\n", dir);
+			errprintf("skip build for cross-compile %s\n", dir);
 		goto nobuild;
+	}
+
+	// The files generated by GNU Bison use macros that aren't
+	// supported by the Plan 9 compilers so we have to use the
+	// external preprocessor when compiling.
+	usecpp = 0;
+	if(streq(gohostos, "plan9")) {
+		for(i=0; i<files.len; i++) {
+			p = files.p[i];
+			if(hassuffix(p, "y.tab.c") || hassuffix(p, "y.tab.h")){
+				usecpp = 1;
+				break;
+			}
+		}
 	}
 
 	// Compile the files.
@@ -825,35 +894,55 @@ install(char *dir)
 		vreset(&compile);
 		if(!isgo) {
 			// C library or tool.
-			vcopy(&compile, gccargs.p, gccargs.len);
-			vadd(&compile, "-c");
-			if(streq(gohostarch, "amd64"))
-				vadd(&compile, "-m64");
-			else if(streq(gohostarch, "386"))
-				vadd(&compile, "-m32");
-			if(streq(dir, "lib9"))
-				vadd(&compile, "-DPLAN9PORT");
-
-			vadd(&compile, "-I");
-			vadd(&compile, bpathf(&b, "%s/include", goroot));
+			if(streq(gohostos, "plan9")) {
+				vadd(&compile, bprintf(&b, "%sc", gohostchar));
+				vadd(&compile, "-FTVw");
+				if(usecpp)
+					vadd(&compile, "-Bp+");
+				vadd(&compile, bpathf(&b, "-I%s/include/plan9", goroot));
+				vadd(&compile, bpathf(&b, "-I%s/include/plan9/%s", goroot, gohostarch));
+			} else {
+				vcopy(&compile, gccargs.p, gccargs.len);
+				vadd(&compile, "-c");
+				if(streq(gohostarch, "amd64"))
+					vadd(&compile, "-m64");
+				else if(streq(gohostarch, "386"))
+					vadd(&compile, "-m32");
+				if(streq(dir, "lib9"))
+					vadd(&compile, "-DPLAN9PORT");
+	
+				vadd(&compile, "-I");
+				vadd(&compile, bpathf(&b, "%s/include", goroot));
+			}
 
 			vadd(&compile, "-I");
 			vadd(&compile, bstr(&path));
 
 			// lib9/goos.c gets the default constants hard-coded.
 			if(streq(name, "goos.c")) {
-				vadd(&compile, bprintf(&b, "-DGOOS=\"%s\"", goos));
-				vadd(&compile, bprintf(&b, "-DGOARCH=\"%s\"", goarch));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GOOS=\"%s\"", goos));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GOARCH=\"%s\"", goarch));
 				bprintf(&b1, "%s", goroot_final);
 				bsubst(&b1, "\\", "\\\\");  // turn into C string
-				vadd(&compile, bprintf(&b, "-DGOROOT=\"%s\"", bstr(&b1)));
-				vadd(&compile, bprintf(&b, "-DGOVERSION=\"%s\"", goversion));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GOROOT=\"%s\"", bstr(&b1)));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GOVERSION=\"%s\"", goversion));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GOARM=\"%s\"", goarm));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GO386=\"%s\"", go386));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b, "GO_EXTLINK_ENABLED=\"%s\"", goextlinkenabled));
 			}
 
 			// gc/lex.c records the GOEXPERIMENT setting used during the build.
 			if(streq(name, "lex.c")) {
 				xgetenv(&b, "GOEXPERIMENT");
-				vadd(&compile, bprintf(&b1, "-DGOEXPERIMENT=\"%s\"", bstr(&b)));
+				vadd(&compile, "-D");
+				vadd(&compile, bprintf(&b1, "GOEXPERIMENT=\"%s\"", bstr(&b)));
 			}
 		} else {
 			// Supporting files for a Go package.
@@ -861,12 +950,18 @@ install(char *dir)
 				vadd(&compile, bpathf(&b, "%s/%sa", tooldir, gochar));
 			else {
 				vadd(&compile, bpathf(&b, "%s/%sc", tooldir, gochar));
-				vadd(&compile, "-FVw");
+				vadd(&compile, "-F");
+				vadd(&compile, "-V");
+				vadd(&compile, "-w");
 			}
 			vadd(&compile, "-I");
 			vadd(&compile, workdir);
-			vadd(&compile, bprintf(&b, "-DGOOS_%s", goos));
-			vadd(&compile, bprintf(&b, "-DGOARCH_%s", goarch));
+			vadd(&compile, "-I");
+			vadd(&compile, bprintf(&b, "%s/pkg/%s_%s", goroot, goos, goarch));
+			vadd(&compile, "-D");
+			vadd(&compile, bprintf(&b, "GOOS_%s", goos));
+			vadd(&compile, "-D");
+			vadd(&compile, bprintf(&b, "GOARCH_%s", goarch));
 		}
 
 		bpathf(&b, "%s/%s", workdir, lastelem(files.p[i]));
@@ -882,7 +977,11 @@ install(char *dir)
 			doclean = 0;
 		}
 
-		b.p[b.len-1] = 'o';  // was c or s
+		// Change the last character of the output file (which was c or s).
+		if(streq(gohostos, "plan9"))
+			b.p[b.len-1] = gohostchar[0];
+		else
+			b.p[b.len-1] = 'o';
 		vadd(&compile, "-o");
 		vadd(&compile, bstr(&b));
 		vadd(&compile, files.p[i]);
@@ -923,7 +1022,8 @@ install(char *dir)
 	if(!islib && !isgo) {
 		// C binaries need the libraries explicitly, and -lm.
 		vcopy(&link, lib.p, lib.len);
-		vadd(&link, "-lm");
+		if(!streq(gohostos, "plan9"))
+			vadd(&link, "-lm");
 	}
 
 	// Remove target before writing it.
@@ -963,7 +1063,16 @@ out:
 static bool
 matchfield(char *f)
 {
-	return streq(f, goos) || streq(f, goarch) || streq(f, "cmd_go_bootstrap");
+	char *p;
+	bool res;
+
+	p = xstrrchr(f, ',');
+	if(p == nil)
+		return streq(f, goos) || streq(f, goarch) || streq(f, "cmd_go_bootstrap") || streq(f, "go1.1");
+	*p = 0;
+	res = matchfield(f) && matchfield(p+1);
+	*p = ',';
+	return res;
 }
 
 // shouldbuild reports whether we should build this file.
@@ -981,6 +1090,21 @@ shouldbuild(char *file, char *dir)
 	Buf b;
 	Vec lines, fields;
 
+	// On Plan 9, most of the libraries are already present.
+	// The main exception is libmach which has been modified
+	// in various places to support Go object files.
+	if(streq(gohostos, "plan9")) {
+		if(streq(dir, "lib9")) {
+			name = lastelem(file);
+			if(streq(name, "goos.c") || streq(name, "flag.c"))
+				return 1;
+			if(!contains(name, "plan9"))
+				return 0;
+		}
+		if(streq(dir, "libbio"))
+			return 0;
+	}
+	
 	// Check file name for GOOS or GOARCH.
 	name = lastelem(file);
 	for(i=0; i<nelem(okgoos); i++)
@@ -1057,7 +1181,7 @@ copy(char *dst, char *src, int exec)
 	Buf b;
 
 	if(vflag > 1)
-		xprintf("cp %s %s\n", src, dst);
+		errprintf("cp %s %s\n", src, dst);
 
 	binit(&b);
 	readfile(&b, src);
@@ -1125,6 +1249,7 @@ static char *buildorder[] = {
 	"pkg/go/ast",
 	"pkg/go/parser",
 	"pkg/os/exec",
+	"pkg/os/signal",
 	"pkg/net/url",
 	"pkg/text/template/parse",
 	"pkg/text/template",
@@ -1294,6 +1419,9 @@ cmdenv(int argc, char **argv)
 	format = "%s=\"%s\"\n";
 	pflag = 0;
 	ARGBEGIN{
+	case '9':
+		format = "%s='%s'\n";
+		break;
 	case 'p':
 		pflag = 1;
 		break;
@@ -1318,6 +1446,10 @@ cmdenv(int argc, char **argv)
 	xprintf(format, "GOHOSTOS", gohostos);
 	xprintf(format, "GOTOOLDIR", tooldir);
 	xprintf(format, "GOCHAR", gochar);
+	if(streq(goarch, "arm"))
+		xprintf(format, "GOARM", goarm);
+	if(streq(goarch, "386"))
+		xprintf(format, "GO386", go386);
 
 	if(pflag) {
 		sep = ":";
@@ -1470,7 +1602,7 @@ cmdclean(int argc, char **argv)
 void
 cmdbanner(int argc, char **argv)
 {
-	char *pathsep;
+	char *pathsep, *pid, *ns;
 	Buf b, b1, search, path;
 
 	ARGBEGIN{
@@ -1494,15 +1626,28 @@ cmdbanner(int argc, char **argv)
 	xprintf("Installed Go for %s/%s in %s\n", goos, goarch, goroot);
 	xprintf("Installed commands in %s\n", gobin);
 
-	// Check that gobin appears in $PATH.
-	xgetenv(&b, "PATH");
-	pathsep = ":";
-	if(streq(gohostos, "windows"))
-		pathsep = ";";
-	bprintf(&b1, "%s%s%s", pathsep, bstr(&b), pathsep);
-	bprintf(&search, "%s%s%s", pathsep, gobin, pathsep);
-	if(xstrstr(bstr(&b1), bstr(&search)) == nil)
-		xprintf("*** You need to add %s to your PATH.\n", gobin);
+	if(streq(gohostos, "plan9")) {
+		// Check that gobin is bound before /bin.
+		readfile(&b, "#c/pid");
+		bsubst(&b, " ", "");
+		pid = btake(&b);
+		bprintf(&b, "/proc/%s/ns", pid);
+		ns = btake(&b);
+		readfile(&b, ns);
+		bprintf(&search, "bind -b %s /bin\n", gobin);
+		if(xstrstr(bstr(&b), bstr(&search)) == nil)
+			xprintf("*** You need to bind %s before /bin.\n", gobin);
+	} else {
+		// Check that gobin appears in $PATH.
+		xgetenv(&b, "PATH");
+		pathsep = ":";
+		if(streq(gohostos, "windows"))
+			pathsep = ";";
+		bprintf(&b1, "%s%s%s", pathsep, bstr(&b), pathsep);
+		bprintf(&search, "%s%s%s", pathsep, gobin, pathsep);
+		if(xstrstr(bstr(&b1), bstr(&search)) == nil)
+			xprintf("*** You need to add %s to your PATH.\n", gobin);
+	}
 
 	if(streq(gohostos, "darwin")) {
 		if(isfile(bpathf(&path, "%s/cov", tooldir)))
@@ -1511,7 +1656,7 @@ cmdbanner(int argc, char **argv)
 				"Read and run ./sudo.bash to install the debuggers.\n");
 	}
 
-	if(!streq(goroot_final, goroot)) {
+	if(!xsamefile(goroot_final, goroot)) {
 		xprintf("\n"
 			"The binaries expect %s to be copied or moved to %s\n",
 			goroot, goroot_final);

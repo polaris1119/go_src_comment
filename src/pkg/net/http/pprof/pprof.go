@@ -30,9 +30,12 @@
 //
 //	go tool pprof http://localhost:6060/debug/pprof/profile
 //
-// Or to view all available profiles:
+// Or to look at the goroutine blocking profile:
 //
-//	go tool pprof http://localhost:6060/debug/pprof/
+//	go tool pprof http://localhost:6060/debug/pprof/block
+//
+// To view all available profiles, open http://localhost:6060/debug/pprof/
+// in your browser.
 //
 // For a study of the facility in action, visit
 //
@@ -169,7 +172,7 @@ func (name handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // listing the available profiles.
 func Index(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/debug/pprof/") {
-		name := r.URL.Path[len("/debug/pprof/"):]
+		name := strings.TrimPrefix(r.URL.Path, "/debug/pprof/")
 		if name != "" {
 			handler(name).ServeHTTP(w, r)
 			return

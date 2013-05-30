@@ -6,26 +6,28 @@
 #include <sys/signalvar.h>
 #include <pthread.h>
 #include <signal.h>
+#include <string.h>
 #include "libcgo.h"
 
 static void* threadentry(void*);
+static void (*setmg_gcc)(void*, void*);
 
-static void
-xinitcgo(G *g)
+void
+x_cgo_init(G *g, void (*setmg)(void*, void*))
 {
 	pthread_attr_t attr;
 	size_t size;
 
+	setmg_gcc = setmg;
 	pthread_attr_init(&attr);
 	pthread_attr_getstacksize(&attr, &size);
 	g->stackguard = (uintptr)&attr - size + 4096;
 	pthread_attr_destroy(&attr);
 }
 
-void (*initcgo)(G*) = xinitcgo;
 
 void
-libcgo_sys_thread_start(ThreadStart *ts)
+_cgo_sys_thread_start(ThreadStart *ts)
 {
 	pthread_attr_t attr;
 	sigset_t ign, oset;
@@ -60,21 +62,15 @@ threadentry(void *v)
 	ts.g->stackbase = (uintptr)&ts;
 
 	/*
-	 * libcgo_sys_thread_start set stackguard to stack size;
+	 * _cgo_sys_thread_start set stackguard to stack size;
 	 * change to actual guard pointer.
 	 */
 	ts.g->stackguard = (uintptr)&ts - ts.g->stackguard + 4096;
 
 	/*
-	 * Set specific keys.  On FreeBSD/ELF, the thread local storage
-	 * is just before %gs:0.  Our dynamic 8.out's reserve 8 bytes
-	 * for the two words g and m at %gs:-8 and %gs:-4.
+	 * Set specific keys.
 	 */
-	asm volatile (
-		"movl %0, %%gs:-8\n"	// MOVL g, -8(GS)
-		"movl %1, %%gs:-4\n"	// MOVL m, -4(GS)
-		:: "r"(ts.g), "r"(ts.m)
-	);
+	setmg_gcc((void*)ts.m, (void*)ts.g);
 
 	crosscall_386(ts.fn);
 	return nil;

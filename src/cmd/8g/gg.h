@@ -16,9 +16,12 @@ struct	Addr
 	int32	offset;
 	int32	offset2;
 
-	double	dval;
-	Prog*	branch;
-	char	sval[NSNAME];
+	union {
+		double	dval;
+		vlong	vval;
+		Prog*	branch;
+		char	sval[NSNAME];
+	} u;
 
 	Sym*	gotype;
 	Sym*	sym;
@@ -28,7 +31,6 @@ struct	Addr
 	uchar	index;
 	uchar	etype;
 	uchar	scale;	/* doubles as width in DATA op */
-	uchar	pun;	/* dont register variable */
 };
 #define	A	((Addr*)0)
 
@@ -83,37 +85,38 @@ void	cgen_proc(Node*, int);
 void	cgen_callret(Node*, Node*);
 void	cgen_div(int, Node*, Node*, Node*);
 void	cgen_bmul(int, Node*, Node*, Node*);
-void	cgen_shift(int, Node*, Node*, Node*);
+void	cgen_hmul(Node*, Node*, Node*);
+void	cgen_shift(int, int, Node*, Node*, Node*);
+void	cgen_float(Node*, Node*);
+void	bgen_float(Node *n, int true, int likely, Prog *to);
 void	cgen_dcl(Node*);
 int	needconvert(Type*, Type*);
 void	genconv(Type*, Type*);
 void	allocparams(void);
-void	checklabels();
+void	checklabels(void);
 void	ginscall(Node*, int);
 
 /*
  * cgen.c
  */
 void	agen(Node*, Node*);
-void	agenr(Node *n, Node *a, Node *res);
 void	igen(Node*, Node*, Node*);
 vlong	fieldoffset(Type*, Node*);
-void	bgen(Node*, int, Prog*);
 void	sgen(Node*, Node*, int64);
 void	gmove(Node*, Node*);
 Prog*	gins(int, Node*, Node*);
 int	samaddr(Node*, Node*);
 void	naddr(Node*, Addr*, int);
 void	cgen_aret(Node*, Node*);
-int	cgen_inline(Node*, Node*);
 Node*	ncon(uint32);
 void	mgen(Node*, Node*, Node*);
 void	mfree(Node*);
+int	componentgen(Node*, Node*);
 
 /*
  * cgen64.c
  */
-void	cmp64(Node*, Node*, int, Prog*);
+void	cmp64(Node*, Node*, int, int, Prog*);
 void	cgen64(Node*, Node*);
 
 /*
@@ -121,16 +124,13 @@ void	cgen64(Node*, Node*);
  */
 void	clearp(Prog*);
 void	proglist(void);
-Prog*	gbranch(int, Type*);
+Prog*	gbranch(int, Type*, int);
 Prog*	prog(int);
-void	gaddoffset(Node*);
 void	gconv(int, int);
 int	conv2pt(Type*);
 vlong	convvtox(vlong, int);
 void	fnparam(Type*, int, int);
 Prog*	gop(int, Node*, Node*, Node*);
-void	setconst(Addr*, vlong);
-void	setaddr(Addr*, Node*);
 int	optoas(int, Type*);
 int	foptoas(int, Type*, int);
 void	ginit(void);
@@ -142,18 +142,17 @@ void	nodreg(Node*, Type*, int);
 void	nodindreg(Node*, Type*, int);
 void	nodconst(Node*, Type*, int64);
 void	gconreg(int, vlong, int);
-void	datagostring(Strlit*, Addr*);
-void	datastring(char*, int, Addr*);
 void	buildtxt(void);
 Plist*	newplist(void);
 int	isfat(Type*);
 void	sudoclean(void);
 int	sudoaddable(int, Node*, Addr*);
 int	dotaddable(Node*, Node*);
-void	afunclit(Addr*);
+void	afunclit(Addr*, Node*);
 void	split64(Node*, Node*, Node*);
 void	splitclean(void);
 void	nswap(Node*, Node*);
+void	gtrack(Sym*);
 
 /*
  * cplx.c
@@ -161,7 +160,12 @@ void	nswap(Node*, Node*);
 int	complexop(Node*, Node*);
 void	complexmove(Node*, Node*);
 void	complexgen(Node*, Node*);
-void	complexbool(int, Node*, Node*, int, Prog*);
+
+/*
+ * gobj.c
+ */
+void	datastring(char*, int, Addr*);
+void	datagostring(Strlit*, Addr*);
 
 /*
  * list.c

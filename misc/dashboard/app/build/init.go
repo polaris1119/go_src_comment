@@ -20,10 +20,13 @@ var defaultPackages = []*Package{
 
 // subRepos specifies the Go project sub-repositories.
 var subRepos = []string{
+	"blog",
 	"codereview",
 	"crypto",
+	"exp",
 	"image",
 	"net",
+	"talks",
 }
 
 // Put subRepos into defaultPackages.
@@ -42,7 +45,12 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 	c := appengine.NewContext(r)
 	defer cache.Tick(c)
 	for _, p := range defaultPackages {
-		if err := datastore.Get(c, p.Key(c), new(Package)); err == nil {
+		err := datastore.Get(c, p.Key(c), new(Package))
+		if _, ok := err.(*datastore.ErrFieldMismatch); ok {
+			// Some fields have been removed, so it's okay to ignore this error.
+			err = nil
+		}
+		if err == nil {
 			continue
 		} else if err != datastore.ErrNoSuchEntity {
 			logErr(w, r, err)

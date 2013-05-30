@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // This is a tool for packaging binary releases.
-// It supports FreeBSD, Linux, OS X, and Windows.
+// It supports FreeBSD, Linux, NetBSD, OS X, and Windows.
 package main
 
 import (
@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -30,19 +29,21 @@ import (
 )
 
 var (
-	tag      = flag.String("tag", "weekly", "mercurial tag to check out")
-	repo     = flag.String("repo", "https://code.google.com/p/go", "repo URL")
-	verbose  = flag.Bool("v", false, "verbose output")
-	upload   = flag.Bool("upload", true, "upload resulting files to Google Code")
-	wxsFile  = flag.String("wxs", "", "path to custom installer.wxs")
-	addLabel = flag.String("label", "", "additional label to apply to file when uploading")
+	tag             = flag.String("tag", "release", "mercurial tag to check out")
+	repo            = flag.String("repo", "https://code.google.com/p/go", "repo URL")
+	tourPath        = flag.String("tour", "code.google.com/p/go-tour", "Go tour repo import path")
+	verbose         = flag.Bool("v", false, "verbose output")
+	upload          = flag.Bool("upload", true, "upload resulting files to Google Code")
+	wxsFile         = flag.String("wxs", "", "path to custom installer.wxs")
+	addLabel        = flag.String("label", "", "additional label to apply to file when uploading")
+	includeRace     = flag.Bool("race", true, "build race detector packages")
+	versionOverride = flag.String("version", "", "override version name")
 
 	username, password string // for Google Code upload
 )
 
 const (
-	packageMaker = "/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker"
-	uploadURL    = "https://go.googlecode.com/files"
+	uploadURL = "https://go.googlecode.com/files"
 )
 
 var preBuildCleanFiles = []string{
@@ -66,7 +67,29 @@ var sourceCleanFiles = []string{
 	"pkg",
 }
 
-var fileRe = regexp.MustCompile(`^go\.([a-z0-9-.]+)\.(src|([a-z0-9]+)-([a-z0-9]+))\.`)
+var tourPackages = []string{
+	"pic",
+	"tree",
+	"wc",
+}
+
+var tourContent = []string{
+	"js",
+	"prog",
+	"solutions",
+	"static",
+	"template",
+	"tour.article",
+}
+
+// The os-arches that support the race toolchain.
+var raceAvailable = []string{
+	"darwin-amd64",
+	"linux-amd64",
+	"windows-amd64",
+}
+
+var fileRe = regexp.MustCompile(`^(go[a-z0-9-.]+)\.(src|([a-z0-9]+)-([a-z0-9]+))\.`)
 
 func main() {
 	flag.Usage = func() {
@@ -117,6 +140,13 @@ func main() {
 			}
 			b.OS = p[0]
 			b.Arch = p[1]
+			if *includeRace {
+				for _, t := range raceAvailable {
+					if t == targ {
+						b.Race = true
+					}
+				}
+			}
 		}
 		if err := b.Do(); err != nil {
 			log.Printf("%s: %v", targ, err)
@@ -126,9 +156,11 @@ func main() {
 
 type Build struct {
 	Source bool // if true, OS and Arch must be empty
+	Race   bool // build race toolchain
 	OS     string
 	Arch   string
 	root   string
+	gopath string
 }
 
 func (b *Build) Do() error {
@@ -138,6 +170,7 @@ func (b *Build) Do() error {
 	}
 	defer os.RemoveAll(work)
 	b.root = filepath.Join(work, "go")
+	b.gopath = work
 
 	// Clone Go distribution and update to tag.
 	_, err = b.run(work, "hg", "clone", "-q", *repo, b.root)
@@ -168,6 +201,26 @@ func (b *Build) Do() error {
 		} else {
 			_, err = b.run(src, "bash", "make.bash")
 		}
+		if b.Race {
+			if err != nil {
+				return err
+			}
+			goCmd := filepath.Join(b.root, "bin", "go")
+			if b.OS == "windows" {
+				goCmd += ".exe"
+			}
+			_, err = b.run(src, goCmd, "install", "-race", "std")
+			if err != nil {
+				return err
+			}
+			// Re-install std without -race, so that we're not left
+			// with a slower, race-enabled cmd/go, cmd/godoc, etc.
+			_, err = b.run(src, goCmd, "install", "-a", "std")
+		}
+		if err != nil {
+			return err
+		}
+		err = b.tour()
 	}
 	if err != nil {
 		return err
@@ -193,6 +246,9 @@ func (b *Build) Do() error {
 	fullVersion = bytes.TrimSpace(fullVersion)
 	v := bytes.SplitN(fullVersion, []byte(" "), 2)
 	version = string(v[0])
+	if *versionOverride != "" {
+		version = *versionOverride
+	}
 
 	// Write VERSION file.
 	err = ioutil.WriteFile(filepath.Join(b.root, "VERSION"), fullVersion, 0644)
@@ -211,19 +267,31 @@ func (b *Build) Do() error {
 	}
 
 	// Create packages.
-	base := fmt.Sprintf("go.%s.%s-%s", version, b.OS, b.Arch)
+	base := fmt.Sprintf("%s.%s-%s", version, b.OS, b.Arch)
+	if !strings.HasPrefix(base, "go") {
+		base = "go." + base
+	}
 	var targs []string
 	switch b.OS {
-	case "linux", "freebsd", "":
+	case "linux", "freebsd", "netbsd", "":
 		// build tarball
 		targ := base
 		if b.Source {
-			targ = fmt.Sprintf("go.%s.src", version)
+			targ = fmt.Sprintf("%s.src", version)
+			if !strings.HasPrefix(targ, "go") {
+				targ = "go." + targ
+			}
 		}
 		targ += ".tar.gz"
 		err = makeTar(targ, work)
 		targs = append(targs, targ)
 	case "darwin":
+		// build tarball
+		targ := base + ".tar.gz"
+		err = makeTar(targ, work)
+		targs = append(targs, targ)
+
+		// build pkg
 		// arrange work so it's laid out as the dest filesystem
 		etc := filepath.Join(b.root, "misc/dist/darwin/etc")
 		_, err = b.run(work, "cp", "-r", etc, ".")
@@ -231,7 +299,7 @@ func (b *Build) Do() error {
 			return err
 		}
 		localDir := filepath.Join(work, "usr/local")
-		err = os.MkdirAll(localDir, 0744)
+		err = os.MkdirAll(localDir, 0755)
 		if err != nil {
 			return err
 		}
@@ -240,23 +308,30 @@ func (b *Build) Do() error {
 			return err
 		}
 		// build package
-		pm := packageMaker
-		if !exists(pm) {
-			pm = "/Developer" + pm
-			if !exists(pm) {
-				return errors.New("couldn't find PackageMaker")
-			}
+		pkgdest, err := ioutil.TempDir("", "pkgdest")
+		if err != nil {
+			return err
 		}
-		targ := base + ".pkg"
-		scripts := filepath.Join(work, "usr/local/go/misc/dist/darwin/scripts")
-		_, err = b.run("", pm, "-v",
-			"-r", work,
-			"-o", targ,
-			"--scripts", scripts,
-			"--id", "com.googlecode.go",
-			"--title", "Go",
+		defer os.RemoveAll(pkgdest)
+		dist := filepath.Join(runtime.GOROOT(), "misc/dist")
+		_, err = b.run("", "pkgbuild",
+			"--identifier", "com.googlecode.go",
 			"--version", "1.0",
-			"--target", "10.6")
+			"--scripts", filepath.Join(dist, "darwin/scripts"),
+			"--root", work,
+			filepath.Join(pkgdest, "com.googlecode.go.pkg"))
+		if err != nil {
+			return err
+		}
+		targ = base + ".pkg"
+		_, err = b.run("", "productbuild",
+			"--distribution", filepath.Join(dist, "darwin/Distribution"),
+			"--resources", filepath.Join(dist, "darwin/Resources"),
+			"--package-path", pkgdest,
+			targ)
+		if err != nil {
+			return err
+		}
 		targs = append(targs, targ)
 	case "windows":
 		// Create ZIP file.
@@ -327,6 +402,37 @@ func (b *Build) Do() error {
 	return err
 }
 
+func (b *Build) tour() error {
+	// go get the gotour package.
+	_, err := b.run(b.gopath, filepath.Join(b.root, "bin", "go"), "get", *tourPath+"/gotour")
+	if err != nil {
+		return err
+	}
+
+	// Copy all the tour content to $GOROOT/misc/tour.
+	importPath := filepath.FromSlash(*tourPath)
+	tourSrc := filepath.Join(b.gopath, "src", importPath)
+	contentDir := filepath.Join(b.root, "misc", "tour")
+	if err = cpAllDir(contentDir, tourSrc, tourContent...); err != nil {
+		return err
+	}
+
+	// Copy the tour source code so it's accessible with $GOPATH pointing to $GOROOT/misc/tour.
+	if err = cpAllDir(filepath.Join(contentDir, "src", importPath), tourSrc, tourPackages...); err != nil {
+		return err
+	}
+
+	// Copy gotour binary to tool directory as "tour"; invoked as "go tool tour".
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	return cp(
+		filepath.Join(b.root, "pkg", "tool", b.OS+"_"+b.Arch, "tour"+ext),
+		filepath.Join(b.gopath, "bin", "gotour"+ext),
+	)
+}
+
 func (b *Build) run(dir, name string, args ...string) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	absName, err := lookPath(name)
@@ -358,6 +464,7 @@ var cleanEnv = []string{
 	"GOOS",
 	"GOROOT",
 	"GOROOT_FINAL",
+	"GOPATH",
 }
 
 func (b *Build) env() []string {
@@ -380,6 +487,7 @@ func (b *Build) env() []string {
 		"GOOS="+b.OS,
 		"GOROOT="+b.root,
 		"GOROOT_FINAL="+final,
+		"GOPATH="+b.gopath,
 	)
 	return env
 }
@@ -390,41 +498,55 @@ func (b *Build) Upload(version string, filename string) error {
 	os_, arch := b.OS, b.Arch
 	switch b.Arch {
 	case "386":
-		arch = "32-bit"
+		arch = "x86 32-bit"
 	case "amd64":
-		arch = "64-bit"
+		arch = "x86 64-bit"
 	}
 	if arch != "" {
 		labels = append(labels, "Arch-"+b.Arch)
 	}
+	var opsys, ftype string // labels
 	switch b.OS {
 	case "linux":
 		os_ = "Linux"
-		labels = append(labels, "Type-Archive", "OpSys-Linux")
+		opsys = "Linux"
 	case "freebsd":
 		os_ = "FreeBSD"
-		labels = append(labels, "Type-Archive", "OpSys-FreeBSD")
+		opsys = "FreeBSD"
 	case "darwin":
 		os_ = "Mac OS X"
-		labels = append(labels, "Type-Installer", "OpSys-OSX")
+		opsys = "OSX"
+	case "netbsd":
+		os_ = "NetBSD"
+		opsys = "NetBSD"
 	case "windows":
 		os_ = "Windows"
-		labels = append(labels, "OpSys-Windows")
+		opsys = "Windows"
 	}
 	summary := fmt.Sprintf("%s %s (%s)", version, os_, arch)
-	if b.OS == "windows" {
-		switch {
-		case strings.HasSuffix(filename, ".msi"):
-			labels = append(labels, "Type-Installer")
-			summary += " MSI installer"
-		case strings.HasSuffix(filename, ".zip"):
-			labels = append(labels, "Type-Archive")
-			summary += " ZIP archive"
-		}
+	switch {
+	case strings.HasSuffix(filename, ".msi"):
+		ftype = "Installer"
+		summary += " MSI installer"
+	case strings.HasSuffix(filename, ".pkg"):
+		ftype = "Installer"
+		summary += " PKG installer"
+	case strings.HasSuffix(filename, ".zip"):
+		ftype = "Archive"
+		summary += " ZIP archive"
+	case strings.HasSuffix(filename, ".tar.gz"):
+		ftype = "Archive"
+		summary += " tarball"
 	}
 	if b.Source {
-		labels = append(labels, "Type-Source")
+		ftype = "Source"
 		summary = fmt.Sprintf("%s (source only)", version)
+	}
+	if opsys != "" {
+		labels = append(labels, "OpSys-"+opsys)
+	}
+	if ftype != "" {
+		labels = append(labels, "Type-"+ftype)
 	}
 	if *addLabel != "" {
 		labels = append(labels, *addLabel)
@@ -535,13 +657,46 @@ func cp(dst, src string) error {
 		return err
 	}
 	defer sf.Close()
+	fi, err := sf.Stat()
+	if err != nil {
+		return err
+	}
 	df, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer df.Close()
+	// Windows doesn't currently implement Fchmod
+	if runtime.GOOS != "windows" {
+		if err := df.Chmod(fi.Mode()); err != nil {
+			return err
+		}
+	}
 	_, err = io.Copy(df, sf)
 	return err
+}
+
+func cpDir(dst, src string) error {
+	walk := func(srcPath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		dstPath := filepath.Join(dst, srcPath[len(src):])
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, 0755)
+		}
+		return cp(dstPath, srcPath)
+	}
+	return filepath.Walk(src, walk)
+}
+
+func cpAllDir(dst, basePath string, dirs ...string) error {
+	for _, dir := range dirs {
+		if err := cpDir(filepath.Join(dst, dir), filepath.Join(basePath, dir)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func makeTar(targ, workdir string) error {
@@ -552,7 +707,7 @@ func makeTar(targ, workdir string) error {
 	zout := gzip.NewWriter(f)
 	tw := tar.NewWriter(zout)
 
-	filepath.Walk(workdir, filepath.WalkFunc(func(path string, fi os.FileInfo, err error) error {
+	err = filepath.Walk(workdir, func(path string, fi os.FileInfo, err error) error {
 		if !strings.HasPrefix(path, workdir) {
 			log.Panicf("walked filename %q doesn't begin with workdir %q", path, workdir)
 		}
@@ -570,10 +725,8 @@ func makeTar(targ, workdir string) error {
 		if *verbose {
 			log.Printf("adding to tar: %s", name)
 		}
-		if fi.IsDir() {
-			return nil
-		}
-		hdr, err := tarFileInfoHeader(fi, path)
+		target, _ := os.Readlink(path)
+		hdr, err := tar.FileInfoHeader(fi, target)
 		if err != nil {
 			return err
 		}
@@ -594,6 +747,9 @@ func makeTar(targ, workdir string) error {
 		if err != nil {
 			return fmt.Errorf("Error writing file %q: %v", name, err)
 		}
+		if fi.IsDir() {
+			return nil
+		}
 		r, err := os.Open(path)
 		if err != nil {
 			return err
@@ -601,8 +757,10 @@ func makeTar(targ, workdir string) error {
 		defer r.Close()
 		_, err = io.Copy(tw, r)
 		return err
-	}))
-
+	})
+	if err != nil {
+		return err
+	}
 	if err := tw.Close(); err != nil {
 		return err
 	}
@@ -619,10 +777,7 @@ func makeZip(targ, workdir string) error {
 	}
 	zw := zip.NewWriter(f)
 
-	filepath.Walk(workdir, filepath.WalkFunc(func(path string, fi os.FileInfo, err error) error {
-		if fi.IsDir() {
-			return nil
-		}
+	err = filepath.Walk(workdir, func(path string, fi os.FileInfo, err error) error {
 		if !strings.HasPrefix(path, workdir) {
 			log.Panicf("walked filename %q doesn't begin with workdir %q", path, workdir)
 		}
@@ -649,9 +804,16 @@ func makeZip(targ, workdir string) error {
 		}
 		fh.Name = name
 		fh.Method = zip.Deflate
+		if fi.IsDir() {
+			fh.Name += "/"        // append trailing slash
+			fh.Method = zip.Store // no need to deflate 0 byte files
+		}
 		w, err := zw.CreateHeader(fh)
 		if err != nil {
 			return err
+		}
+		if fi.IsDir() {
+			return nil
 		}
 		r, err := os.Open(path)
 		if err != nil {
@@ -660,8 +822,10 @@ func makeZip(targ, workdir string) error {
 		defer r.Close()
 		_, err = io.Copy(w, r)
 		return err
-	}))
-
+	})
+	if err != nil {
+		return err
+	}
 	if err := zw.Close(); err != nil {
 		return err
 	}
@@ -732,65 +896,4 @@ func lookPath(prog string) (absPath string, err error) {
 		}
 	}
 	return
-}
-
-// sysStat, if non-nil, populates h from system-dependent fields of fi.
-var sysStat func(fi os.FileInfo, h *tar.Header) error
-
-// Mode constants from the tar spec.
-const (
-	c_ISDIR  = 040000
-	c_ISFIFO = 010000
-	c_ISREG  = 0100000
-	c_ISLNK  = 0120000
-	c_ISBLK  = 060000
-	c_ISCHR  = 020000
-	c_ISSOCK = 0140000
-)
-
-// tarFileInfoHeader creates a partially-populated Header from an os.FileInfo.
-// The filename parameter is used only in the case of symlinks, to call os.Readlink.
-// If fi is a symlink but filename is empty, an error is returned.
-func tarFileInfoHeader(fi os.FileInfo, filename string) (*tar.Header, error) {
-	h := &tar.Header{
-		Name:    fi.Name(),
-		ModTime: fi.ModTime(),
-		Mode:    int64(fi.Mode().Perm()), // or'd with c_IS* constants later
-	}
-	switch {
-	case fi.Mode()&os.ModeType == 0:
-		h.Mode |= c_ISREG
-		h.Typeflag = tar.TypeReg
-		h.Size = fi.Size()
-	case fi.IsDir():
-		h.Typeflag = tar.TypeDir
-		h.Mode |= c_ISDIR
-	case fi.Mode()&os.ModeSymlink != 0:
-		h.Typeflag = tar.TypeSymlink
-		h.Mode |= c_ISLNK
-		if filename == "" {
-			return h, fmt.Errorf("archive/tar: unable to populate Header.Linkname of symlinks")
-		}
-		targ, err := os.Readlink(filename)
-		if err != nil {
-			return h, err
-		}
-		h.Linkname = targ
-	case fi.Mode()&os.ModeDevice != 0:
-		if fi.Mode()&os.ModeCharDevice != 0 {
-			h.Mode |= c_ISCHR
-			h.Typeflag = tar.TypeChar
-		} else {
-			h.Mode |= c_ISBLK
-			h.Typeflag = tar.TypeBlock
-		}
-	case fi.Mode()&os.ModeSocket != 0:
-		h.Mode |= c_ISSOCK
-	default:
-		return nil, fmt.Errorf("archive/tar: unknown file mode %v", fi.Mode())
-	}
-	if sysStat != nil {
-		return h, sysStat(fi, h)
-	}
-	return h, nil
 }

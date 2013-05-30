@@ -1,5 +1,5 @@
 // Inferno utils/5c/reg.c
-// http://code.google.com/p/inferno-os/source/browse/utils/5g/reg.c
+// http://code.google.com/p/inferno-os/source/browse/utils/5c/reg.c
 //
 //	Copyright © 1994-1999 Lucent Technologies Inc.  All rights reserved.
 //	Portions Copyright © 1995-1997 C H Forsyth (forsyth@terzarima.net)
@@ -34,8 +34,8 @@
 #include "gg.h"
 #include "opt.h"
 
-#define	NREGVAR	24
-#define	REGBITS	((uint32)0xffffff)
+#define	NREGVAR	32
+#define	REGBITS	((uint32)0xffffffff)
 #define	P2R(p)	(Reg*)(p->reg)
 
 	void	addsplits(void);
@@ -95,7 +95,7 @@ setoutvar(void)
 			ovar.b[z] |= bit.b[z];
 		t = structnext(&save);
 	}
-//if(bany(ovar))
+//if(bany(&ovar))
 //print("ovar = %Q\n", ovar);
 }
 
@@ -160,7 +160,17 @@ static char* regname[] = {
 	".F5",
 	".F6",
 	".F7",
+	".F8",
+	".F9",
+	".F10",
+	".F11",
+	".F12",
+	".F13",
+	".F14",
+	".F15",
 };
+
+static Node* regnodes[NREGVAR];
 
 void
 regopt(Prog *firstp)
@@ -197,7 +207,6 @@ regopt(Prog *firstp)
 		return;
 	}
 
-	r1 = R;
 	firstr = R;
 	lastr = R;
 
@@ -208,8 +217,11 @@ regopt(Prog *firstp)
 	 */
 	nvar = NREGVAR;
 	memset(var, 0, NREGVAR*sizeof var[0]);
-	for(i=0; i<NREGVAR; i++)
-		var[i].node = newname(lookup(regname[i]));
+	for(i=0; i<NREGVAR; i++) {
+		if(regnodes[i] == N)
+			regnodes[i] = newname(lookup(regname[i]));
+		var[i].node = regnodes[i];
+	}
 
 	regbits = RtoB(REGSP)|RtoB(REGLINK)|RtoB(REGPC);
 	for(z=0; z<BITS; z++) {
@@ -236,6 +248,8 @@ regopt(Prog *firstp)
 		case AGLOBL:
 		case ANAME:
 		case ASIGNAME:
+		case ALOCALS:
+		case ATYPE:
 			continue;
 		}
 		r = rega();
@@ -262,6 +276,10 @@ regopt(Prog *firstp)
 				r1->s1 = R;
 			}
 		}
+
+		// Avoid making variables for direct-called functions.
+		if(p->as == ABL && p->to.type == D_EXTERN)
+			continue;
 
 		/*
 		 * left side always read
@@ -408,9 +426,13 @@ regopt(Prog *firstp)
 				addrs.b[z] |= bit.b[z];
 		}
 
-//		print("bit=%2d addr=%d et=%-6E w=%-2d s=%S + %lld\n",
-//			i, v->addr, v->etype, v->width, v->sym, v->offset);
+		if(debug['R'] && debug['v'])
+			print("bit=%2d addr=%d et=%-6E w=%-2d s=%N + %lld\n",
+				i, v->addr, v->etype, v->width, v->node, v->offset);
 	}
+
+	if(debug['R'] && debug['v'])
+		dumpit("pass1", firstr);
 
 	/*
 	 * pass 2
@@ -420,9 +442,9 @@ regopt(Prog *firstp)
 	for(r=firstr; r!=R; r=r->link) {
 		p = r->prog;
 		if(p->to.type == D_BRANCH) {
-			if(p->to.branch == P)
+			if(p->to.u.branch == P)
 				fatal("pnil %P", p);
-			r1 = p->to.branch->regp;
+			r1 = p->to.u.branch->regp;
 			if(r1 == R)
 				fatal("rnil %P", p);
 			if(r1 == r) {
@@ -440,6 +462,9 @@ regopt(Prog *firstp)
 		print("	addr = %Q\n", addrs);
 	}
 
+	if(debug['R'] && debug['v'])
+		dumpit("pass2", firstr);
+
 	/*
 	 * pass 2.5
 	 * find looping structure
@@ -448,6 +473,9 @@ regopt(Prog *firstp)
 		r->active = 0;
 	change = 0;
 	loopit(firstr, nr);
+
+	if(debug['R'] && debug['v'])
+		dumpit("pass2.5", firstr);
 
 	/*
 	 * pass 3
@@ -476,6 +504,9 @@ loop11:
 	if(change)
 		goto loop1;
 
+	if(debug['R'] && debug['v'])
+		dumpit("pass3", firstr);
+
 
 	/*
 	 * pass 4
@@ -491,6 +522,9 @@ loop2:
 		goto loop2;
 
 	addsplits();
+
+	if(debug['R'] && debug['v'])
+		dumpit("pass4", firstr);
 
 	if(debug['R'] > 1) {
 		print("\nprop structure:\n");
@@ -542,6 +576,9 @@ loop2:
 		r->regdiff.b[0] &= ~REGBITS;
 		r->act.b[0] &= ~REGBITS;
 	}
+
+	if(debug['R'] && debug['v'])
+		dumpit("pass4.5", firstr);
 
 	/*
 	 * pass 5
@@ -605,6 +642,9 @@ loop2:
 brk:
 	qsort(region, nregion, sizeof(region[0]), rcmp);
 
+	if(debug['R'] && debug['v'])
+		dumpit("pass5", firstr);
+
 	/*
 	 * pass 6
 	 * determine used registers (paint2)
@@ -633,6 +673,10 @@ brk:
 			paint3(rgp->enter, rgp->varno, vreg, rgp->regno);
 		rgp++;
 	}
+
+	if(debug['R'] && debug['v'])
+		dumpit("pass6", firstr);
+
 	/*
 	 * pass 7
 	 * peep-hole on basic block
@@ -640,6 +684,9 @@ brk:
 	if(!debug['R'] || debug['P']) {
 		peep();
 	}
+
+	if(debug['R'] && debug['v'])
+		dumpit("pass7", firstr);
 
 	/*
 	 * last pass
@@ -662,8 +709,8 @@ brk:
 		while(p->link != P && p->link->as == ANOP)
 			p->link = p->link->link;
 		if(p->to.type == D_BRANCH)
-			while(p->to.branch != P && p->to.branch->as == ANOP)
-				p->to.branch = p->to.branch->link;
+			while(p->to.u.branch != P && p->to.u.branch->as == ANOP)
+				p->to.u.branch = p->to.u.branch->link;
 		if(p->as == AMOVW && p->to.reg == 13) {
 			if(p->scond & C_WBIT) {
 				vreg = -p->to.offset;		// in adjust region
@@ -866,6 +913,7 @@ mkvar(Reg *r, Adr *a)
 		goto onereg;
 
 	case D_REGREG:
+	case D_REGREG2:
 		bit = zbits;
 		if(a->offset != NREG)
 			bit.b[0] |= RtoB(a->offset);
@@ -926,6 +974,8 @@ mkvar(Reg *r, Adr *a)
 	et = a->etype;
 	o = a->offset;
 	w = a->width;
+	if(w < 0)
+		fatal("bad width %d for %D", w, a);
 
 	for(i=0; i<nvar; i++) {
 		v = var+i;
@@ -947,8 +997,6 @@ mkvar(Reg *r, Adr *a)
 	switch(et) {
 	case 0:
 	case TFUNC:
-	case TARRAY:
-	case TSTRING:
 		goto none;
 	}
 
@@ -964,14 +1012,13 @@ mkvar(Reg *r, Adr *a)
 	v = var+i;
 	v->offset = o;
 	v->name = n;
-//	v->gotype = a->gotype;
 	v->etype = et;
 	v->width = w;
 	v->addr = flag;		// funny punning
 	v->node = node;
 	
 	if(debug['R'])
-		print("bit=%2d et=%2d w=%d+%d %#N %D flag=%d\n", i, et, o, w, node, a, v->addr);
+		print("bit=%2d et=%2E w=%d+%d %#N %D flag=%d\n", i, et, o, w, node, a, v->addr);
 
 	bit = blsh(i);
 	if(n == D_EXTERN || n == D_STATIC)
@@ -1033,8 +1080,12 @@ prop(Reg *r, Bits ref, Bits cal)
 		default:
 			// Work around for issue 1304:
 			// flush modified globals before each instruction.
-			for(z=0; z<BITS; z++)
+			for(z=0; z<BITS; z++) {
 				cal.b[z] |= externs.b[z];
+				// issue 4066: flush modified return variables in case of panic
+				if(hasdefer)
+					cal.b[z] |= ovar.b[z];
+			}
 			break;
 		}
 		for(z=0; z<BITS; z++) {
@@ -1486,11 +1537,12 @@ addreg(Adr *a, int rn)
  *	1	R1
  *	...	...
  *	10	R10
+ *	12  R12
  */
 int32
 RtoB(int r)
 {
-	if(r >= REGTMP-2)	// excluded R9 and R10 for m and g
+	if(r >= REGTMP-2 && r != 12)	// excluded R9 and R10 for m and g, but not R12
 		return 0;
 	return 1L << r;
 }
@@ -1498,7 +1550,7 @@ RtoB(int r)
 int
 BtoR(int32 b)
 {
-	b &= 0x01fcL;	// excluded R9 and R10 for m and g
+	b &= 0x11fcL;	// excluded R9 and R10 for m and g, but not R12
 	if(b == 0)
 		return 0;
 	return bitno(b);
@@ -1509,7 +1561,7 @@ BtoR(int32 b)
  *	18	F2
  *	19	F3
  *	...	...
- *	23	F7
+ *	31	F15
  */
 int32
 FtoB(int f)
@@ -1524,7 +1576,7 @@ int
 BtoF(int32 b)
 {
 
-	b &= 0xfc0000L;
+	b &= 0xfffc0000L;
 	if(b == 0)
 		return 0;
 	return bitno(b) - 16;
@@ -1643,7 +1695,7 @@ chasejmp(Prog *p, int *jmploop)
 			*jmploop = 1;
 			break;
 		}
-		p = p->to.branch;
+		p = p->to.u.branch;
 	}
 	return p;
 }
@@ -1665,8 +1717,8 @@ mark(Prog *firstp)
 		if(p->regp != dead)
 			break;
 		p->regp = alive;
-		if(p->as != ABL && p->to.type == D_BRANCH && p->to.branch)
-			mark(p->to.branch);
+		if(p->as != ABL && p->to.type == D_BRANCH && p->to.u.branch)
+			mark(p->to.u.branch);
 		if(p->as == AB || p->as == ARET || (p->as == ABL && noreturn(p)))
 			break;
 	}
@@ -1686,8 +1738,8 @@ fixjmp(Prog *firstp)
 	for(p=firstp; p; p=p->link) {
 		if(debug['R'] && debug['v'])
 			print("%P\n", p);
-		if(p->as != ABL && p->to.type == D_BRANCH && p->to.branch && p->to.branch->as == AB) {
-			p->to.branch = chasejmp(p->to.branch, &jmploop);
+		if(p->as != ABL && p->to.type == D_BRANCH && p->to.u.branch && p->to.u.branch->as == AB) {
+			p->to.u.branch = chasejmp(p->to.u.branch, &jmploop);
 			if(debug['R'] && debug['v'])
 				print("->%P\n", p);
 		}
@@ -1695,7 +1747,7 @@ fixjmp(Prog *firstp)
 	}
 	if(debug['R'] && debug['v'])
 		print("\n");
-
+	
 	// pass 2: mark all reachable code alive
 	mark(firstp);
 	
@@ -1723,7 +1775,7 @@ fixjmp(Prog *firstp)
 	if(!jmploop) {
 		last = nil;
 		for(p=firstp; p; p=p->link) {
-			if(p->as == AB && p->to.type == D_BRANCH && p->to.branch == p->link) {
+			if(p->as == AB && p->to.type == D_BRANCH && p->to.u.branch == p->link) {
 				if(debug['R'] && debug['v'])
 					print("del %P\n", p);
 				continue;

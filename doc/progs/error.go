@@ -1,3 +1,5 @@
+// compile
+
 // Copyright 2011 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -18,7 +20,11 @@ import (
 
 type File struct{}
 
-func Open(name string) (file *File, err error)
+func Open(name string) (file *File, err error) {
+	// OMIT
+	panic(1)
+	// STOP OMIT
+}
 
 func openFile() { // OMIT
 	f, err := os.Open("filename.ext")

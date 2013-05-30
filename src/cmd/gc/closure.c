@@ -60,6 +60,7 @@ closurebody(NodeList *body)
 
 	func = curfn;
 	func->nbody = body;
+	func->endlineno = lineno;
 	funcbody(func);
 
 	// closure-specific variables are hanging off the
@@ -75,6 +76,8 @@ closurebody(NodeList *body)
 	return func;
 }
 
+static Node* makeclosure(Node *func);
+
 void
 typecheckclosure(Node *func, int top)
 {
@@ -85,12 +88,12 @@ typecheckclosure(Node *func, int top)
 	oldfn = curfn;
 	typecheck(&func->ntype, Etype);
 	func->type = func->ntype->type;
-	if(curfn == nil) {
-		xtop = list(xtop, func);
-		return;
-	}
-
-	if(func->type != T) {
+	
+	// Type check the body now, but only if we're inside a function.
+	// At top level (in a variable initialization: curfn==nil) we're not
+	// ready to type check code yet; we'll check it later, because the
+	// underlying closure function we create is added to xtop.
+	if(curfn && func->type != T) {
 		curfn = func;
 		typechecklist(func->nbody, Etop);
 		curfn = oldfn;
@@ -120,26 +123,44 @@ typecheckclosure(Node *func, int top)
 		func->enter = list(func->enter, v->heapaddr);
 		v->heapaddr = N;
 	}
+
+	// Create top-level function 
+	xtop = list(xtop, makeclosure(func));
 }
 
 static Node*
-makeclosure(Node *func, NodeList **init, int nowrap)
+makeclosure(Node *func)
 {
-	Node *xtype, *v, *addr, *xfunc;
-	NodeList *l;
+	Node *xtype, *v, *addr, *xfunc, *cv;
+	NodeList *l, *body;
 	static int closgen;
 	char *p;
-
-	USED(init);
+	vlong offset;
 
 	/*
 	 * wrap body in external function
-	 * with extra closure parameters.
+	 * that begins by reading closure parameters.
 	 */
 	xtype = nod(OTFUNC, N, N);
+	xtype->list = func->list;
+	xtype->rlist = func->rlist;
 
-	// each closure variable has a corresponding
-	// address parameter.
+	// create the function
+	xfunc = nod(ODCLFUNC, N, N);
+	snprint(namebuf, sizeof namebuf, "func·%.3d", ++closgen);
+	xfunc->nname = newname(lookup(namebuf));
+	xfunc->nname->sym->flags |= SymExported; // disable export
+	xfunc->nname->ntype = xtype;
+	xfunc->nname->defn = xfunc;
+	declare(xfunc->nname, PFUNC);
+	xfunc->nname->funcdepth = func->funcdepth;
+	xfunc->funcdepth = func->funcdepth;
+	xfunc->endlineno = func->endlineno;
+	
+	// declare variables holding addresses taken from closure
+	// and initialize in entry prologue.
+	body = nil;
+	offset = widthptr;
 	for(l=func->cvars; l; l=l->next) {
 		v = l->n;
 		if(v->op == 0)
@@ -149,38 +170,35 @@ makeclosure(Node *func, NodeList **init, int nowrap)
 		addr->sym = lookup(p);
 		free(p);
 		addr->ntype = nod(OIND, typenod(v->type), N);
-		addr->class = PPARAM;
+		addr->class = PAUTO;
 		addr->addable = 1;
 		addr->ullman = 1;
-
+		addr->used = 1;
+		addr->curfn = xfunc;
+		xfunc->dcl = list(xfunc->dcl, addr);
 		v->heapaddr = addr;
-
-		xtype->list = list(xtype->list, nod(ODCLFIELD, addr, addr->ntype));
+		cv = nod(OCLOSUREVAR, N, N);
+		cv->type = ptrto(v->type);
+		cv->xoffset = offset;
+		body = list(body, nod(OAS, addr, cv));
+		offset += widthptr;
 	}
+	typechecklist(body, Etop);
+	walkstmtlist(body);
+	xfunc->enter = body;
 
-	// then a dummy arg where the closure's caller pc sits
-	if (!nowrap)
-		xtype->list = list(xtype->list, nod(ODCLFIELD, N, typenod(types[TUINTPTR])));
-
-	// then the function arguments
-	xtype->list = concat(xtype->list, func->list);
-	xtype->rlist = concat(xtype->rlist, func->rlist);
-
-	// create the function
-	xfunc = nod(ODCLFUNC, N, N);
-	snprint(namebuf, sizeof namebuf, "_func_%.3d", ++closgen);
-	xfunc->nname = newname(lookup(namebuf));
-	xfunc->nname->ntype = xtype;
-	xfunc->nname->defn = xfunc;
-	declare(xfunc->nname, PFUNC);
-	xfunc->nname->funcdepth = func->funcdepth;
-	xfunc->funcdepth = func->funcdepth;
 	xfunc->nbody = func->nbody;
-	xfunc->dcl = func->dcl;
+	xfunc->dcl = concat(func->dcl, xfunc->dcl);
 	if(xfunc->nbody == nil)
 		fatal("empty body - won't generate any code");
 	typecheck(&xfunc, Etop);
-	closures = list(closures, xfunc);
+
+	xfunc->closure = func;
+	func->closure = xfunc;
+	
+	func->nbody = nil;
+	func->list = nil;
+	func->rlist = nil;
 
 	return xfunc;
 }
@@ -188,72 +206,225 @@ makeclosure(Node *func, NodeList **init, int nowrap)
 Node*
 walkclosure(Node *func, NodeList **init)
 {
+	Node *clos, *typ;
+	NodeList *l;
+	char buf[20];
 	int narg;
-	Node *xtype, *xfunc, *call, *clos;
-	NodeList *l, *in;
 
-	// no closure vars, don't bother wrapping
+	// If no closure vars, don't bother wrapping.
 	if(func->cvars == nil)
-		return makeclosure(func, init, 1)->nname;
+		return func->closure->nname;
 
-	/*
-	 * wrap body in external function
-	 * with extra closure parameters.
-	 */
+	// Create closure in the form of a composite literal.
+	// supposing the closure captures an int i and a string s
+	// and has one float64 argument and no results,
+	// the generated code looks like:
+	//
+	//	clos = &struct{F uintptr; A0 *int; A1 *string}{func·001, &i, &s}
+	//
+	// The use of the struct provides type information to the garbage
+	// collector so that it can walk the closure. We could use (in this case)
+	// [3]unsafe.Pointer instead, but that would leave the gc in the dark.
+	// The information appears in the binary in the form of type descriptors;
+	// the struct is unnamed so that closures in multiple packages with the
+	// same struct type can share the descriptor.
 
-	// create the function
-	xfunc = makeclosure(func, init, 0);
-	xtype = xfunc->nname->ntype;
-
-	// prepare call of sys.closure that turns external func into func literal value.
-	clos = syslook("closure", 1);
-	clos->type = T;
-	clos->ntype = nod(OTFUNC, N, N);
-	in = list1(nod(ODCLFIELD, N, typenod(types[TINT])));	// siz
-	in = list(in, nod(ODCLFIELD, N, xtype));
 	narg = 0;
+	typ = nod(OTSTRUCT, N, N);
+	typ->list = list1(nod(ODCLFIELD, newname(lookup("F")), typenod(types[TUINTPTR])));
 	for(l=func->cvars; l; l=l->next) {
 		if(l->n->op == 0)
 			continue;
-		narg++;
-		in = list(in, nod(ODCLFIELD, N, l->n->heapaddr->ntype));
+		snprint(buf, sizeof buf, "A%d", narg++);
+		typ->list = list(typ->list, nod(ODCLFIELD, newname(lookup(buf)), l->n->heapaddr->ntype));
 	}
-	clos->ntype->list = in;
-	clos->ntype->rlist = list1(nod(ODCLFIELD, N, typenod(func->type)));
+
+	clos = nod(OCOMPLIT, N, nod(OIND, typ, N));
+	clos->esc = func->esc;
+	clos->right->implicit = 1;
+	clos->list = concat(list1(nod(OCFUNC, func->closure->nname, N)), func->enter);
+
+	// Force type conversion from *struct to the func type.
+	clos = nod(OCONVNOP, clos, N);
+	clos->type = func->type;
+
 	typecheck(&clos, Erv);
+	// typecheck will insert a PTRLIT node under CONVNOP,
+	// tag it with escape analysis result.
+	clos->left->esc = func->esc;
+	walkexpr(&clos, init);
 
-	call = nod(OCALL, clos, N);
-	if(narg*widthptr > 100)
-		yyerror("closure needs too many variables; runtime will reject it");
-	in = list1(nodintconst(narg*widthptr));
-	in = list(in, xfunc->nname);
-	in = concat(in, func->enter);
-	call->list = in;
-
-	typecheck(&call, Erv);
-	walkexpr(&call, init);
-	return call;
+	return clos;
 }
 
-// Special case for closures that get called in place.
-// Optimize runtime.closure(X, __func__xxxx_, .... ) away
-// to __func__xxxx_(Y ....).
-// On entry, expect n->op == OCALL, n->left->op == OCLOSURE.
+static Node *makepartialcall(Node*, Type*, Node*);
+
 void
-walkcallclosure(Node *n, NodeList **init)
+typecheckpartialcall(Node *fn, Node *sym)
 {
-	if (n->op != OCALLFUNC || n->left->op != OCLOSURE) {
-		dump("walkcallclosure", n);
-		fatal("abuse of walkcallclosure");
+	switch(fn->op) {
+	case ODOTINTER:
+	case ODOTMETH:
+		break;
+	default:
+		fatal("invalid typecheckpartialcall");
 	}
 
-	// New arg list for n. First the closure-args
-	// and then the original parameter list.
-	n->list = concat(n->left->enter, n->list);
-	n->left = makeclosure(n->left, init, 1)->nname;
-	dowidth(n->left->type);
-	n->type = getoutargx(n->left->type);
-	// for a single valued function, pull the field type out of the struct
-	if (n->type && n->type->type && !n->type->type->down)
-		n->type = n->type->type->type;
+	// Create top-level function.
+	fn->nname = makepartialcall(fn, fn->type, sym);
+	fn->right = sym;
+	fn->op = OCALLPART;
+	fn->type = fn->nname->type;
+}
+
+static Node*
+makepartialcall(Node *fn, Type *t0, Node *meth)
+{
+	Node *ptr, *n, *fld, *call, *xtype, *xfunc, *cv;
+	Type *rcvrtype, *basetype, *t;
+	NodeList *body, *l, *callargs, *retargs;
+	char *p;
+	Sym *sym;
+	int i, ddd;
+
+	// TODO: names are not right
+	rcvrtype = fn->left->type;
+	if(exportname(meth->sym->name))
+		p = smprint("%-hT.%s·fm", rcvrtype, meth->sym->name);
+	else
+		p = smprint("%-hT.(%-S)·fm", rcvrtype, meth->sym);
+	basetype = rcvrtype;
+	if(isptr[rcvrtype->etype])
+		basetype = basetype->type;
+	if(basetype->sym == S)
+		fatal("missing base type for %T", rcvrtype);
+
+	sym = pkglookup(p, basetype->sym->pkg);
+	free(p);
+	if(sym->flags & SymUniq)
+		return sym->def;
+	sym->flags |= SymUniq;
+
+	xtype = nod(OTFUNC, N, N);
+	i = 0;
+	l = nil;
+	callargs = nil;
+	ddd = 0;
+	xfunc = nod(ODCLFUNC, N, N);
+	for(t = getinargx(t0)->type; t; t = t->down) {
+		snprint(namebuf, sizeof namebuf, "a%d", i++);
+		n = newname(lookup(namebuf));
+		n->class = PPARAM;
+		xfunc->dcl = list(xfunc->dcl, n);
+		callargs = list(callargs, n);
+		fld = nod(ODCLFIELD, n, typenod(t->type));
+		if(t->isddd) {
+			fld->isddd = 1;
+			ddd = 1;
+		}
+		l = list(l, fld);
+	}
+	xtype->list = l;
+	i = 0;
+	l = nil;
+	retargs = nil;
+	for(t = getoutargx(t0)->type; t; t = t->down) {
+		snprint(namebuf, sizeof namebuf, "r%d", i++);
+		n = newname(lookup(namebuf));
+		n->class = PPARAMOUT;
+		xfunc->dcl = list(xfunc->dcl, n);
+		retargs = list(retargs, n);
+		l = list(l, nod(ODCLFIELD, n, typenod(t->type)));
+	}
+	xtype->rlist = l;
+
+	xfunc->dupok = 1;
+	xfunc->nname = newname(sym);
+	xfunc->nname->sym->flags |= SymExported; // disable export
+	xfunc->nname->ntype = xtype;
+	xfunc->nname->defn = xfunc;
+	declare(xfunc->nname, PFUNC);
+
+	// Declare and initialize variable holding receiver.
+	body = nil;
+	cv = nod(OCLOSUREVAR, N, N);
+	cv->xoffset = widthptr;
+	cv->type = rcvrtype;
+	ptr = nod(ONAME, N, N);
+	ptr->sym = lookup("rcvr");
+	ptr->class = PAUTO;
+	ptr->addable = 1;
+	ptr->ullman = 1;
+	ptr->used = 1;
+	ptr->curfn = xfunc;
+	xfunc->dcl = list(xfunc->dcl, ptr);
+	if(isptr[rcvrtype->etype] || isinter(rcvrtype)) {
+		ptr->ntype = typenod(rcvrtype);
+		body = list(body, nod(OAS, ptr, cv));
+	} else {
+		ptr->ntype = typenod(ptrto(rcvrtype));
+		body = list(body, nod(OAS, ptr, nod(OADDR, cv, N)));
+	}
+
+	call = nod(OCALL, nod(OXDOT, ptr, meth), N);
+	call->list = callargs;
+	call->isddd = ddd;
+	if(t0->outtuple == 0) {
+		body = list(body, call);
+	} else {
+		n = nod(OAS2, N, N);
+		n->list = retargs;
+		n->rlist = list1(call);
+		body = list(body, n);
+		n = nod(ORETURN, N, N);
+		body = list(body, n);
+	}
+
+	xfunc->nbody = body;
+
+	typecheck(&xfunc, Etop);
+	sym->def = xfunc;
+	xtop = list(xtop, xfunc);
+
+	return xfunc;
+}
+
+Node*
+walkpartialcall(Node *n, NodeList **init)
+{
+	Node *clos, *typ;
+
+	// Create closure in the form of a composite literal.
+	// For x.M with receiver (x) type T, the generated code looks like:
+	//
+	//	clos = &struct{F uintptr; R T}{M.T·f, x}
+	//
+	// Like walkclosure above.
+
+	if(isinter(n->left->type)) {
+		n->left = cheapexpr(n->left, init);
+		checknotnil(n->left, init);
+	}
+
+	typ = nod(OTSTRUCT, N, N);
+	typ->list = list1(nod(ODCLFIELD, newname(lookup("F")), typenod(types[TUINTPTR])));
+	typ->list = list(typ->list, nod(ODCLFIELD, newname(lookup("R")), typenod(n->left->type)));
+
+	clos = nod(OCOMPLIT, N, nod(OIND, typ, N));
+	clos->esc = n->esc;
+	clos->right->implicit = 1;
+	clos->list = list1(nod(OCFUNC, n->nname->nname, N));
+	clos->list = list(clos->list, n->left);
+
+	// Force type conversion from *struct to the func type.
+	clos = nod(OCONVNOP, clos, N);
+	clos->type = n->type;
+
+	typecheck(&clos, Erv);
+	// typecheck will insert a PTRLIT node under CONVNOP,
+	// tag it with escape analysis result.
+	clos->left->esc = n->esc;
+	walkexpr(&clos, init);
+
+	return clos;
 }

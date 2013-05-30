@@ -77,11 +77,11 @@ TEXT runtime·usleep(SB),7,$8
 	CALL	*runtime·_vdso(SB)
 	RET
 
-TEXT runtime·raisesigpipe(SB),7,$12
+TEXT runtime·raise(SB),7,$12
 	MOVL	$224, AX	// syscall - gettid
 	CALL	*runtime·_vdso(SB)
-	MOVL	AX, 0(SP)	// arg 1 tid
-	MOVL	$13, 4(SP)	// arg 2 SIGPIPE
+	MOVL	AX, BX	// arg 1 tid
+	MOVL	sig+0(FP), CX	// arg 2 signal
 	MOVL	$238, AX	// syscall - tkill
 	CALL	*runtime·_vdso(SB)
 	RET
@@ -104,40 +104,38 @@ TEXT runtime·mincore(SB),7,$0-24
 
 // func now() (sec int64, nsec int32)
 TEXT time·now(SB), 7, $32
-	MOVL	$78, AX			// syscall - gettimeofday
-	LEAL	8(SP), BX
-	MOVL	$0, CX
+	MOVL	$265, AX			// syscall - clock_gettime
+	MOVL	$0, BX
+	LEAL	8(SP), CX
 	MOVL	$0, DX
 	CALL	*runtime·_vdso(SB)
 	MOVL	8(SP), AX	// sec
-	MOVL	12(SP), BX	// usec
+	MOVL	12(SP), BX	// nsec
 
-	// sec is in AX, usec in BX
+	// sec is in AX, nsec in BX
 	MOVL	AX, sec+0(FP)
 	MOVL	$0, sec+4(FP)
-	IMULL	$1000, BX
 	MOVL	BX, nsec+8(FP)
 	RET
 
 // int64 nanotime(void) so really
 // void nanotime(int64 *nsec)
 TEXT runtime·nanotime(SB), 7, $32
-	MOVL	$78, AX			// syscall - gettimeofday
-	LEAL	8(SP), BX
-	MOVL	$0, CX
+	MOVL	$265, AX			// syscall - clock_gettime
+	MOVL	$0, BX
+	LEAL	8(SP), CX
 	MOVL	$0, DX
 	CALL	*runtime·_vdso(SB)
 	MOVL	8(SP), AX	// sec
-	MOVL	12(SP), BX	// usec
+	MOVL	12(SP), BX	// nsec
 
-	// sec is in AX, usec in BX
+	// sec is in AX, nsec in BX
 	// convert to DX:AX nsec
 	MOVL	$1000000000, CX
 	MULL	CX
-	IMULL	$1000, BX
 	ADDL	BX, AX
 	ADCL	$0, DX
-	
+
 	MOVL	ret+0(FP), DI
 	MOVL	AX, 0(DI)
 	MOVL	DX, 4(DI)
@@ -170,8 +168,11 @@ TEXT runtime·sigtramp(SB),7,$44
 	// check that m exists
 	MOVL	m(CX), BX
 	CMPL	BX, $0
-	JNE	2(PC)
+	JNE	5(PC)
+	MOVL	sig+0(FP), BX
+	MOVL	BX, 0(SP)
 	CALL	runtime·badsignal(SB)
+	RET
 
 	// save g
 	MOVL	g(CX), DI
@@ -240,9 +241,7 @@ TEXT runtime·madvise(SB),7,$0
 	MOVL	8(SP), CX
 	MOVL	12(SP), DX
 	CALL	*runtime·_vdso(SB)
-	CMPL	AX, $0xfffff001
-	JLS	2(PC)
-	INT $3
+	// ignore failure - maybe pages are locked
 	RET
 
 // int32 futex(int32 *uaddr, int32 op, int32 val,
@@ -258,7 +257,7 @@ TEXT runtime·futex(SB),7,$0
 	CALL	*runtime·_vdso(SB)
 	RET
 
-// int32 clone(int32 flags, void *stack, M *m, G *g, void (*fn)(void));
+// int32 clone(int32 flags, void *stack, M *mp, G *gp, void (*fn)(void));
 TEXT runtime·clone(SB),7,$0
 	MOVL	$120, AX	// clone
 	MOVL	flags+4(SP), BX
@@ -266,7 +265,7 @@ TEXT runtime·clone(SB),7,$0
 	MOVL	$0, DX	// parent tid ptr
 	MOVL	$0, DI	// child tid ptr
 
-	// Copy m, g, fn off parent stack for use by child.
+	// Copy mp, gp, fn off parent stack for use by child.
 	SUBL	$16, CX
 	MOVL	mm+12(SP), SI
 	MOVL	SI, 0(CX)
@@ -429,5 +428,48 @@ TEXT runtime·sched_getaffinity(SB),7,$0
 	MOVL	4(SP), BX
 	MOVL	8(SP), CX
 	MOVL	12(SP), DX
+	CALL	*runtime·_vdso(SB)
+	RET
+
+// int32 runtime·epollcreate(int32 size);
+TEXT runtime·epollcreate(SB),7,$0
+	MOVL    $254, AX
+	MOVL	4(SP), BX
+	CALL	*runtime·_vdso(SB)
+	RET
+
+// int32 runtime·epollcreate1(int32 flags);
+TEXT runtime·epollcreate1(SB),7,$0
+	MOVL    $329, AX
+	MOVL	4(SP), BX
+	CALL	*runtime·_vdso(SB)
+	RET
+
+// int32 runtime·epollctl(int32 epfd, int32 op, int32 fd, EpollEvent *ev);
+TEXT runtime·epollctl(SB),7,$0
+	MOVL	$255, AX
+	MOVL	4(SP), BX
+	MOVL	8(SP), CX
+	MOVL	12(SP), DX
+	MOVL	16(SP), SI
+	CALL	*runtime·_vdso(SB)
+	RET
+
+// int32 runtime·epollwait(int32 epfd, EpollEvent *ev, int32 nev, int32 timeout);
+TEXT runtime·epollwait(SB),7,$0
+	MOVL	$256, AX
+	MOVL	4(SP), BX
+	MOVL	8(SP), CX
+	MOVL	12(SP), DX
+	MOVL	16(SP), SI
+	CALL	*runtime·_vdso(SB)
+	RET
+
+// void runtime·closeonexec(int32 fd);
+TEXT runtime·closeonexec(SB),7,$0
+	MOVL	$55, AX  // fcntl
+	MOVL	4(SP), BX  // fd
+	MOVL	$2, CX  // F_SETFD
+	MOVL	$1, DX  // FD_CLOEXEC
 	CALL	*runtime·_vdso(SB)
 	RET

@@ -2,20 +2,59 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Runtime symbol table access.  Work in progress.
-// The Plan 9 symbol table is not in a particularly convenient form.
-// The routines here massage it into a more usable form; eventually
-// we'll change 6l to do this for us, but it is easier to experiment
-// here than to change 6l and all the other tools.
+// Runtime symbol table parsing.
 //
-// The symbol table also needs to be better integrated with the type
-// strings table in the future.  This is just a quick way to get started
-// and figure out exactly what we want.
+// The Go tools use a symbol table derived from the Plan 9 symbol table
+// format. The symbol table is kept in its own section treated as
+// read-only memory when the binary is running: the binary consults the
+// table.
+// 
+// The format used by Go 1.0 was basically the Plan 9 format. Each entry
+// is variable sized but had this format:
+// 
+// 	4-byte value, big endian
+// 	1-byte type ([A-Za-z] + 0x80)
+// 	name, NUL terminated (or for 'z' and 'Z' entries, double-NUL terminated)
+// 	4-byte Go type address, big endian (new in Go)
+// 
+// In order to support greater interoperation with standard toolchains,
+// Go 1.1 uses a more flexible yet smaller encoding of the entries.
+// The overall structure is unchanged from Go 1.0 and, for that matter,
+// from Plan 9.
+// 
+// The Go 1.1 table is a re-encoding of the data in a Go 1.0 table.
+// To identify a new table as new, it begins one of two eight-byte
+// sequences:
+// 
+// 	FF FF FF FD 00 00 00 xx - big endian new table
+// 	FD FF FF FF 00 00 00 xx - little endian new table
+// 
+// This sequence was chosen because old tables stop at an entry with type
+// 0, so old code reading a new table will see only an empty table. The
+// first four bytes are the target-endian encoding of 0xfffffffd. The
+// final xx gives AddrSize, the width of a full-width address.
+// 
+// After that header, each entry is encoded as follows.
+// 
+// 	1-byte type (0-51 + two flag bits)
+// 	AddrSize-byte value, host-endian OR varint-encoded value
+// 	AddrSize-byte Go type address OR nothing
+// 	[n] name, terminated as before
+// 
+// The type byte comes first, but 'A' encodes as 0 and 'a' as 26, so that
+// the type itself is only in the low 6 bits. The upper two bits specify
+// the format of the next two fields. If the 0x40 bit is set, the value
+// is encoded as an full-width 4- or 8-byte target-endian word. Otherwise
+// the value is a varint-encoded number. If the 0x80 bit is set, the Go
+// type is present, again as a 4- or 8-byte target-endian word. If not,
+// there is no Go type in this entry. The NUL-terminated name ends the
+// entry.
 
 #include "runtime.h"
 #include "defs_GOOS_GOARCH.h"
 #include "os_GOOS.h"
 #include "arch_GOARCH.h"
+#include "malloc.h"
 
 extern byte pclntab[], epclntab[], symtab[], esymtab[];
 
@@ -28,24 +67,100 @@ struct Sym
 //	byte *gotype;
 };
 
+static uintptr mainoffset;
+
+// A dynamically allocated string containing multiple substrings.
+// Individual strings are slices of hugestring.
+static String hugestring;
+static int32 hugestring_len;
+
+extern void main·main(void);
+
+static uintptr
+readword(byte **pp, byte *ep)
+{
+	byte *p; 
+
+	p = *pp;
+	if(ep - p < sizeof(void*)) {
+		*pp = ep;
+		return 0;
+	}
+	*pp = p + sizeof(void*);
+
+	// Hairy, but only one of these four cases gets compiled.
+	if(sizeof(void*) == 8) {
+		if(BigEndian) {
+			return ((uint64)p[0]<<56) | ((uint64)p[1]<<48) | ((uint64)p[2]<<40) | ((uint64)p[3]<<32) |
+				((uint64)p[4]<<24) | ((uint64)p[5]<<16) | ((uint64)p[6]<<8) | ((uint64)p[7]);
+		}
+		return ((uint64)p[7]<<56) | ((uint64)p[6]<<48) | ((uint64)p[5]<<40) | ((uint64)p[4]<<32) |
+			((uint64)p[3]<<24) | ((uint64)p[2]<<16) | ((uint64)p[1]<<8) | ((uint64)p[0]);
+	}
+	if(BigEndian) {
+		return ((uint32)p[0]<<24) | ((uint32)p[1]<<16) | ((uint32)p[2]<<8) | ((uint32)p[3]);
+	}
+	return ((uint32)p[3]<<24) | ((uint32)p[2]<<16) | ((uint32)p[1]<<8) | ((uint32)p[0]);
+}
+
 // Walk over symtab, calling fn(&s) for each symbol.
 static void
 walksymtab(void (*fn)(Sym*))
 {
 	byte *p, *ep, *q;
 	Sym s;
+	int32 widevalue, havetype, shift;
 
 	p = symtab;
 	ep = esymtab;
-	while(p < ep) {
-		if(p + 7 > ep)
-			break;
-		s.value = ((uint32)p[0]<<24) | ((uint32)p[1]<<16) | ((uint32)p[2]<<8) | ((uint32)p[3]);
 
-		if(!(p[4]&0x80))
+	// Table must begin with correct magic number.
+	if(ep - p < 8 || p[4] != 0x00 || p[5] != 0x00 || p[6] != 0x00 || p[7] != sizeof(void*))
+		return;
+	if(BigEndian) {
+		if(p[0] != 0xff || p[1] != 0xff || p[2] != 0xff || p[3] != 0xfd)
+			return;
+	} else {
+		if(p[0] != 0xfd || p[1] != 0xff || p[2] != 0xff || p[3] != 0xff)
+			return;
+	}
+	p += 8;
+
+	while(p < ep) {
+		s.symtype = p[0]&0x3F;
+		widevalue = p[0]&0x40;
+		havetype = p[0]&0x80;
+		if(s.symtype < 26)
+			s.symtype += 'A';
+		else
+			s.symtype += 'a' - 26;
+		p++;
+
+		// Value, either full-width or varint-encoded.
+		if(widevalue) {
+			s.value = readword(&p, ep);
+		} else {
+			s.value = 0;
+			shift = 0;
+			while(p < ep && (p[0]&0x80) != 0) {
+				s.value |= (uintptr)(p[0]&0x7F)<<shift;
+				shift += 7;
+				p++;
+			}
+			if(p >= ep)
+				break;
+			s.value |= (uintptr)p[0]<<shift;
+			p++;
+		}
+		
+		// Go type, if present. Ignored but must skip over.
+		if(havetype)
+			readword(&p, ep);
+
+		// Name.
+		if(ep - p < 2)
 			break;
-		s.symtype = p[4] & ~0x80;
-		p += 5;
+
 		s.name = p;
 		if(s.symtype == 'z' || s.symtype == 'Z') {
 			// path reference string - skip first byte,
@@ -65,7 +180,7 @@ walksymtab(void (*fn)(Sym*))
 				break;
 			p = q+1;
 		}
-		p += 4;	// go type
+	
 		fn(&s);
 	}
 }
@@ -80,12 +195,13 @@ static int32 nfname;
 
 static uint32 funcinit;
 static Lock funclock;
+static uintptr lastvalue;
 
 static void
 dofunc(Sym *sym)
 {
 	Func *f;
-
+	
 	switch(sym->symtype) {
 	case 't':
 	case 'T':
@@ -93,6 +209,11 @@ dofunc(Sym *sym)
 	case 'L':
 		if(runtime·strcmp(sym->name, (byte*)"etext") == 0)
 			break;
+		if(sym->value < lastvalue) {
+			runtime·printf("symbols out of order: %p before %p\n", lastvalue, sym->value);
+			runtime·throw("malformed symbol table");
+		}
+		lastvalue = sym->value;
 		if(func == nil) {
 			nfunc++;
 			break;
@@ -104,24 +225,24 @@ dofunc(Sym *sym)
 			f->frame = -sizeof(uintptr);
 		break;
 	case 'm':
-		if(nfunc > 0 && func != nil)
-			func[nfunc-1].frame += sym->value;
-		break;
-	case 'p':
-		if(nfunc > 0 && func != nil) {
-			f = &func[nfunc-1];
-			// args counts 32-bit words.
-			// sym->value is the arg's offset.
-			// don't know width of this arg, so assume it is 64 bits.
-			if(f->args < sym->value/4 + 2)
-				f->args = sym->value/4 + 2;
+		if(nfunc <= 0 || func == nil)
+			break;
+		if(runtime·strcmp(sym->name, (byte*)".frame") == 0)
+			func[nfunc-1].frame = sym->value;
+		else if(runtime·strcmp(sym->name, (byte*)".locals") == 0)
+			func[nfunc-1].locals = sym->value;
+		else if(runtime·strcmp(sym->name, (byte*)".args") == 0)
+			func[nfunc-1].args = sym->value;
+		else {
+			runtime·printf("invalid 'm' symbol named '%s'\n", sym->name);
+			runtime·throw("mangled symbol table");
 		}
 		break;
 	case 'f':
 		if(fname == nil) {
 			if(sym->value >= nfname) {
 				if(sym->value >= 0x10000) {
-					runtime·printf("invalid symbol file index %p\n", sym->value);
+					runtime·printf("runtime: invalid symbol file index %p\n", sym->value);
 					runtime·throw("mangled symbol table");
 				}
 				nfname = sym->value+1;
@@ -135,14 +256,15 @@ dofunc(Sym *sym)
 
 // put together the path name for a z entry.
 // the f entries have been accumulated into fname already.
-static void
+// returns the length of the path name.
+static int32
 makepath(byte *buf, int32 nbuf, byte *path)
 {
 	int32 n, len;
 	byte *p, *ep, *q;
 
 	if(nbuf <= 0)
-		return;
+		return 0;
 
 	p = buf;
 	ep = buf + nbuf;
@@ -163,6 +285,26 @@ makepath(byte *buf, int32 nbuf, byte *path)
 		runtime·memmove(p, q, len+1);
 		p += len;
 	}
+	return p - buf;
+}
+
+// appends p to hugestring
+static String
+gostringn(byte *p, int32 l)
+{
+	String s;
+
+	if(l == 0)
+		return runtime·emptystring;
+	if(hugestring.str == nil) {
+		hugestring_len += l;
+		return runtime·emptystring;
+	}
+	s.str = hugestring.str + hugestring.len;
+	s.len = l;
+	hugestring.len += s.len;
+	runtime·memmove(s.str, p, l);
+	return s;
 }
 
 // walk symtab accumulating path names for use by pc/ln table.
@@ -181,11 +323,13 @@ dosrcline(Sym *sym)
 	static int32 incstart;
 	static int32 nfunc, nfile, nhist;
 	Func *f;
-	int32 i;
+	int32 i, l;
 
 	switch(sym->symtype) {
 	case 't':
 	case 'T':
+		if(hugestring.str == nil)
+			break;
 		if(runtime·strcmp(sym->name, (byte*)"etext") == 0)
 			break;
 		f = &func[nfunc++];
@@ -200,23 +344,23 @@ dosrcline(Sym *sym)
 	case 'z':
 		if(sym->value == 1) {
 			// entry for main source file for a new object.
-			makepath(srcbuf, sizeof srcbuf, sym->name+1);
+			l = makepath(srcbuf, sizeof srcbuf, sym->name+1);
 			nhist = 0;
 			nfile = 0;
 			if(nfile == nelem(files))
 				return;
-			files[nfile].srcstring = runtime·gostring(srcbuf);
+			files[nfile].srcstring = gostringn(srcbuf, l);
 			files[nfile].aline = 0;
 			files[nfile++].delta = 0;
 		} else {
 			// push or pop of included file.
-			makepath(srcbuf, sizeof srcbuf, sym->name+1);
+			l = makepath(srcbuf, sizeof srcbuf, sym->name+1);
 			if(srcbuf[0] != '\0') {
 				if(nhist++ == 0)
 					incstart = sym->value;
 				if(nhist == 0 && nfile < nelem(files)) {
 					// new top-level file
-					files[nfile].srcstring = runtime·gostring(srcbuf);
+					files[nfile].srcstring = gostringn(srcbuf, l);
 					files[nfile].aline = sym->value;
 					// this is "line 0"
 					files[nfile++].delta = sym->value - 1;
@@ -275,7 +419,7 @@ splitpcln(void)
 			line += *p++;
 		else
 			line -= *p++ - 64;
-		
+
 		// pc, line now match.
 		// Because the state machine begins at pc==entry and line==0,
 		// it can happen - just at the beginning! - that the update may
@@ -297,7 +441,7 @@ splitpcln(void)
 			while(f < ef && pc >= (f+1)->entry);
 			f->pcln.array = p;
 			// pc0 and ln0 are the starting values for
-			// the loop over f->pcln, so pc must be 
+			// the loop over f->pcln, so pc must be
 			// adjusted by the same pcquant update
 			// that we're going to do as we continue our loop.
 			f->pc0 = pc + pcquant;
@@ -323,11 +467,11 @@ runtime·funcline(Func *f, uintptr targetpc)
 	uintptr pc;
 	int32 line;
 	int32 pcquant;
-	
+
 	enum {
 		debug = 0
 	};
-	
+
 	switch(thechar) {
 	case '5':
 		pcquant = 4;
@@ -354,7 +498,7 @@ runtime·funcline(Func *f, uintptr targetpc)
 
 		if(debug && !runtime·panicking)
 			runtime·printf("pc<%p targetpc=%p line=%d\n", pc, targetpc, line);
-		
+
 		// If the pc has advanced too far or we're out of data,
 		// stop and the last known line number.
 		if(pc > targetpc || p >= ep)
@@ -382,7 +526,7 @@ runtime·funcline(Func *f, uintptr targetpc)
 }
 
 void
-runtime·funcline_go(Func *f, uintptr targetpc, String retfile, int32 retline)
+runtime·funcline_go(Func *f, uintptr targetpc, String retfile, intgo retline)
 {
 	retfile = f->src;
 	retline = runtime·funcline(f, targetpc);
@@ -406,20 +550,30 @@ buildfuncs(void)
 	// count funcs, fnames
 	nfunc = 0;
 	nfname = 0;
+	lastvalue = 0;
 	walksymtab(dofunc);
 
-	// initialize tables
-	func = runtime·mal((nfunc+1)*sizeof func[0]);
+	// Initialize tables.
+	// Can use FlagNoPointers - all pointers either point into sections of the executable
+	// or point into hugestring.
+	func = runtime·mallocgc((nfunc+1)*sizeof func[0], FlagNoPointers, 0, 1);
 	func[nfunc].entry = (uint64)etext;
-	fname = runtime·mal(nfname*sizeof fname[0]);
+	fname = runtime·mallocgc(nfname*sizeof fname[0], FlagNoPointers, 0, 1);
 	nfunc = 0;
+	lastvalue = 0;
 	walksymtab(dofunc);
 
 	// split pc/ln table by func
 	splitpcln();
 
 	// record src file and line info for each func
-	walksymtab(dosrcline);
+	walksymtab(dosrcline);  // pass 1: determine hugestring_len
+	hugestring.str = runtime·mallocgc(hugestring_len, FlagNoPointers, 0, 0);
+	hugestring.len = 0;
+	walksymtab(dosrcline);  // pass 2: fill and use hugestring
+
+	if(hugestring.len != hugestring_len)
+		runtime·throw("buildfunc: problem in initialization procedure");
 
 	m->nomemprof--;
 }
@@ -482,7 +636,7 @@ static bool
 hasprefix(String s, int8 *p)
 {
 	int32 i;
-	
+
 	for(i=0; i<s.len; i++) {
 		if(p[i] == 0)
 			return 1;
@@ -496,7 +650,7 @@ static bool
 contains(String s, int8 *p)
 {
 	int32 i;
-	
+
 	if(p[0] == 0)
 		return 1;
 	for(i=0; i<s.len; i++) {
@@ -509,11 +663,13 @@ contains(String s, int8 *p)
 }
 
 bool
-runtime·showframe(Func *f)
+runtime·showframe(Func *f, bool current)
 {
 	static int32 traceback = -1;
-	
+
+	if(current && m->throwing > 0)
+		return 1;
 	if(traceback < 0)
-		traceback = runtime·gotraceback();
-	return traceback > 1 || contains(f->name, ".") && !hasprefix(f->name, "runtime.");
+		traceback = runtime·gotraceback(nil);
+	return traceback > 1 || f != nil && contains(f->name, ".") && !hasprefix(f->name, "runtime.");
 }

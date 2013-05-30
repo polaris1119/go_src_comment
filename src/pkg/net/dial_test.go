@@ -7,6 +7,9 @@ package net
 import (
 	"flag"
 	"fmt"
+	"io"
+	"os"
+	"reflect"
 	"regexp"
 	"runtime"
 	"testing"
@@ -25,12 +28,18 @@ func newLocalListener(t *testing.T) Listener {
 }
 
 func TestDialTimeout(t *testing.T) {
+	origBacklog := listenerBacklog
+	defer func() {
+		listenerBacklog = origBacklog
+	}()
+	listenerBacklog = 1
+
 	ln := newLocalListener(t)
 	defer ln.Close()
 
 	errc := make(chan error)
 
-	numConns := listenerBacklog + 10
+	numConns := listenerBacklog + 100
 
 	// TODO(bradfitz): It's hard to test this in a portable
 	// way. This is unfortunate, but works for now.
@@ -55,7 +64,7 @@ func TestDialTimeout(t *testing.T) {
 		// on our 386 builder, this Dial succeeds, connecting
 		// to an IIS web server somewhere.  The data center
 		// or VM or firewall must be stealing the TCP connection.
-		// 
+		//
 		// IANA Service Name and Transport Protocol Port Number Registry
 		// <http://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xml>
 		go func() {
@@ -72,8 +81,7 @@ func TestDialTimeout(t *testing.T) {
 		// by default. FreeBSD likely works, but is untested.
 		// TODO(rsc):
 		// The timeout never happens on Windows.  Why?  Issue 3016.
-		t.Logf("skipping test on %q; untested.", runtime.GOOS)
-		return
+		t.Skipf("skipping test on %q; untested.", runtime.GOOS)
 	}
 
 	connected := 0
@@ -105,8 +113,7 @@ func TestDialTimeout(t *testing.T) {
 func TestSelfConnect(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// TODO(brainman): do not know why it hangs.
-		t.Logf("skipping known-broken test on windows")
-		return
+		t.Skip("skipping known-broken test on windows")
 	}
 	// Test that Dial does not honor self-connects.
 	// See the comment in DialTCP.
@@ -130,7 +137,7 @@ func TestSelfConnect(t *testing.T) {
 		n = 1000
 	}
 	switch runtime.GOOS {
-	case "darwin", "freebsd", "openbsd", "windows":
+	case "darwin", "freebsd", "netbsd", "openbsd", "plan9", "windows":
 		// Non-Linux systems take a long time to figure
 		// out that there is nothing listening on localhost.
 		n = 100
@@ -220,5 +227,183 @@ func TestDialError(t *testing.T) {
 		if match {
 			t.Errorf("#%d: %q, duplicate error return from Dial", i, s)
 		}
+	}
+}
+
+var invalidDialAndListenArgTests = []struct {
+	net  string
+	addr string
+	err  error
+}{
+	{"foo", "bar", &OpError{Op: "dial", Net: "foo", Addr: nil, Err: UnknownNetworkError("foo")}},
+	{"baz", "", &OpError{Op: "listen", Net: "baz", Addr: nil, Err: UnknownNetworkError("baz")}},
+	{"tcp", "", &OpError{Op: "dial", Net: "tcp", Addr: nil, Err: errMissingAddress}},
+}
+
+func TestInvalidDialAndListenArgs(t *testing.T) {
+	for _, tt := range invalidDialAndListenArgTests {
+		var err error
+		switch tt.err.(*OpError).Op {
+		case "dial":
+			_, err = Dial(tt.net, tt.addr)
+		case "listen":
+			_, err = Listen(tt.net, tt.addr)
+		}
+		if !reflect.DeepEqual(tt.err, err) {
+			t.Fatalf("got %#v; expected %#v", err, tt.err)
+		}
+	}
+}
+
+func TestDialTimeoutFDLeak(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		// TODO(bradfitz): test on other platforms
+		t.Skipf("skipping test on %q", runtime.GOOS)
+	}
+
+	ln := newLocalListener(t)
+	defer ln.Close()
+
+	type connErr struct {
+		conn Conn
+		err  error
+	}
+	dials := listenerBacklog + 100
+	// used to be listenerBacklog + 5, but was found to be unreliable, issue 4384.
+	maxGoodConnect := listenerBacklog + runtime.NumCPU()*10
+	resc := make(chan connErr)
+	for i := 0; i < dials; i++ {
+		go func() {
+			conn, err := DialTimeout("tcp", ln.Addr().String(), 500*time.Millisecond)
+			resc <- connErr{conn, err}
+		}()
+	}
+
+	var firstErr string
+	var ngood int
+	var toClose []io.Closer
+	for i := 0; i < dials; i++ {
+		ce := <-resc
+		if ce.err == nil {
+			ngood++
+			if ngood > maxGoodConnect {
+				t.Errorf("%d good connects; expected at most %d", ngood, maxGoodConnect)
+			}
+			toClose = append(toClose, ce.conn)
+			continue
+		}
+		err := ce.err
+		if firstErr == "" {
+			firstErr = err.Error()
+		} else if err.Error() != firstErr {
+			t.Fatalf("inconsistent error messages: first was %q, then later %q", firstErr, err)
+		}
+	}
+	for _, c := range toClose {
+		c.Close()
+	}
+	for i := 0; i < 100; i++ {
+		if got := numFD(); got < dials {
+			// Test passes.
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := numFD(); got >= dials {
+		t.Errorf("num fds after %d timeouts = %d; want <%d", dials, got, dials)
+	}
+}
+
+func numFD() int {
+	if runtime.GOOS == "linux" {
+		f, err := os.Open("/proc/self/fd")
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		names, err := f.Readdirnames(0)
+		if err != nil {
+			panic(err)
+		}
+		return len(names)
+	}
+	// All tests using this should be skipped anyway, but:
+	panic("numFDs not implemented on " + runtime.GOOS)
+}
+
+var testPoller = flag.Bool("poller", false, "platform supports runtime-integrated poller")
+
+// Assert that a failed Dial attempt does not leak
+// runtime.PollDesc structures
+func TestDialFailPDLeak(t *testing.T) {
+	if !*testPoller {
+		t.Skip("test disabled; use -poller to enable")
+	}
+
+	const loops = 10
+	const count = 20000
+	var old runtime.MemStats // used by sysdelta
+	runtime.ReadMemStats(&old)
+	sysdelta := func() uint64 {
+		var new runtime.MemStats
+		runtime.ReadMemStats(&new)
+		delta := old.Sys - new.Sys
+		old = new
+		return delta
+	}
+	d := &Dialer{Timeout: time.Nanosecond} // don't bother TCP with handshaking
+	failcount := 0
+	for i := 0; i < loops; i++ {
+		for i := 0; i < count; i++ {
+			conn, err := d.Dial("tcp", "127.0.0.1:1")
+			if err == nil {
+				t.Error("dial should not succeed")
+				conn.Close()
+				t.FailNow()
+			}
+		}
+		if delta := sysdelta(); delta > 0 {
+			failcount++
+		}
+		// there are always some allocations on the first loop
+		if failcount > 3 {
+			t.Error("detected possible memory leak in runtime")
+			t.FailNow()
+		}
+	}
+}
+
+func TestDialer(t *testing.T) {
+	ln, err := Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer ln.Close()
+	ch := make(chan error, 1)
+	go func() {
+		var err error
+		c, err := ln.Accept()
+		if err != nil {
+			ch <- fmt.Errorf("Accept failed: %v", err)
+			return
+		}
+		defer c.Close()
+		ch <- nil
+	}()
+
+	laddr, err := ResolveTCPAddr("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ResolveTCPAddr failed: %v", err)
+	}
+	d := &Dialer{LocalAddr: laddr}
+	c, err := d.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer c.Close()
+	c.Read(make([]byte, 1))
+	err = <-ch
+	if err != nil {
+		t.Error(err)
 	}
 }

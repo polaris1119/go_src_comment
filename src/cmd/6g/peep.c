@@ -34,6 +34,10 @@
 #include "opt.h"
 
 static void	conprop(Reg *r);
+static void elimshortmov(Reg *r);
+static int prevl(Reg *r, int reg);
+static void pushback(Reg *r);
+static int regconsttyp(Adr*);
 
 // do we need the carry bit
 static int
@@ -45,11 +49,17 @@ needc(Prog *p)
 		case AADCQ:
 		case ASBBL:
 		case ASBBQ:
+		case ARCRB:
+		case ARCRW:
 		case ARCRL:
 		case ARCRQ:
 			return 1;
+		case AADDB:
+		case AADDW:
 		case AADDL:
 		case AADDQ:
+		case ASUBB:
+		case ASUBW:
 		case ASUBL:
 		case ASUBQ:
 		case AJMP:
@@ -122,9 +132,14 @@ peep(void)
 		case AGLOBL:
 		case ANAME:
 		case ASIGNAME:
+		case ALOCALS:
+		case ATYPE:
 			p = p->link;
 		}
 	}
+	
+	// byte, word arithmetic elimination.
+	elimshortmov(r);
 
 	// constant propagation
 	// find MOV $con,R followed by
@@ -200,6 +215,7 @@ loop1:
 		case AMOVWQZX:
 		case AMOVLQSX:
 		case AMOVLQZX:
+		case AMOVQL:
 			if(regtyp(&p->to)) {
 				r1 = rnops(uniqs(r));
 				if(r1 != R) {
@@ -272,6 +288,115 @@ loop1:
 	}
 	if(t)
 		goto loop1;
+
+	// MOVLQZX removal.
+	// The MOVLQZX exists to avoid being confused for a
+	// MOVL that is just copying 32-bit data around during
+	// copyprop.  Now that copyprop is done, remov MOVLQZX R1, R2
+	// if it is dominated by an earlier ADDL/MOVL/etc into R1 that
+	// will have already cleared the high bits.
+	//
+	// MOVSD removal.
+	// We never use packed registers, so a MOVSD between registers
+	// can be replaced by MOVAPD, which moves the pair of float64s
+	// instead of just the lower one.  We only use the lower one, but
+	// the processor can do better if we do moves using both.
+	for(r=firstr; r!=R; r=r->link) {
+		p = r->prog;
+		if(p->as == AMOVLQZX)
+		if(regtyp(&p->from))
+		if(p->from.type == p->to.type)
+		if(prevl(r, p->from.type))
+			excise(r);
+		
+		if(p->as == AMOVSD)
+		if(regtyp(&p->from))
+		if(regtyp(&p->to))
+			p->as = AMOVAPD;
+	}
+
+	// load pipelining
+	// push any load from memory as early as possible
+	// to give it time to complete before use.
+	for(r=firstr; r!=R; r=r->link) {
+		p = r->prog;
+		switch(p->as) {
+		case AMOVB:
+		case AMOVW:
+		case AMOVL:
+		case AMOVQ:
+		case AMOVLQZX:
+			if(regtyp(&p->to) && !regconsttyp(&p->from))
+				pushback(r);
+		}
+	}
+}
+
+static void
+pushback(Reg *r0)
+{
+	Reg *r, *b;
+	Prog *p0, *p, t;
+	
+	b = R;
+	p0 = r0->prog;
+	for(r=uniqp(r0); r!=R && uniqs(r)!=R; r=uniqp(r)) {
+		p = r->prog;
+		if(p->as != ANOP) {
+			if(!regconsttyp(&p->from) || !regtyp(&p->to))
+				break;
+			if(copyu(p, &p0->to, A) || copyu(p0, &p->to, A))
+				break;
+		}
+		if(p->as == ACALL)
+			break;
+		b = r;
+	}
+	
+	if(b == R) {
+		if(debug['v']) {
+			print("no pushback: %P\n", r0->prog);
+			if(r)
+				print("\t%P [%d]\n", r->prog, uniqs(r)!=R);
+		}
+		return;
+	}
+
+	if(debug['v']) {
+		print("pushback\n");
+		for(r=b;; r=r->link) {
+			print("\t%P\n", r->prog);
+			if(r == r0)
+				break;
+		}
+	}
+
+	t = *r0->prog;
+	for(r=uniqp(r0);; r=uniqp(r)) {
+		p0 = r->link->prog;
+		p = r->prog;
+		p0->as = p->as;
+		p0->lineno = p->lineno;
+		p0->from = p->from;
+		p0->to = p->to;
+
+		if(r == b)
+			break;
+	}
+	p0 = r->prog;
+	p0->as = t.as;
+	p0->lineno = t.lineno;
+	p0->from = t.from;
+	p0->to = t.to;
+
+	if(debug['v']) {
+		print("\tafter\n");
+		for(r=b;; r=r->link) {
+			print("\t%P\n", r->prog);
+			if(r == r0)
+				break;
+		}
+	}
 }
 
 void
@@ -335,6 +460,156 @@ regtyp(Adr *a)
 	return 0;
 }
 
+// movb elimination.
+// movb is simulated by the linker
+// when a register other than ax, bx, cx, dx
+// is used, so rewrite to other instructions
+// when possible.  a movb into a register
+// can smash the entire 32-bit register without
+// causing any trouble.
+static void
+elimshortmov(Reg *r)
+{
+	Prog *p;
+
+	USED(r);
+	for(r=firstr; r!=R; r=r->link) {
+		p = r->prog;
+		if(regtyp(&p->to)) {
+			switch(p->as) {
+			case AINCB:
+			case AINCW:
+				p->as = AINCQ;
+				break;
+			case ADECB:
+			case ADECW:
+				p->as = ADECQ;
+				break;
+			case ANEGB:
+			case ANEGW:
+				p->as = ANEGQ;
+				break;
+			case ANOTB:
+			case ANOTW:
+				p->as = ANOTQ;
+				break;
+			}
+			if(regtyp(&p->from) || p->from.type == D_CONST) {
+				// move or artihmetic into partial register.
+				// from another register or constant can be movl.
+				// we don't switch to 64-bit arithmetic if it can
+				// change how the carry bit is set (and the carry bit is needed).
+				switch(p->as) {
+				case AMOVB:
+				case AMOVW:
+					p->as = AMOVQ;
+					break;
+				case AADDB:
+				case AADDW:
+					if(!needc(p->link))
+						p->as = AADDQ;
+					break;
+				case ASUBB:
+				case ASUBW:
+					if(!needc(p->link))
+						p->as = ASUBQ;
+					break;
+				case AMULB:
+				case AMULW:
+					p->as = AMULQ;
+					break;
+				case AIMULB:
+				case AIMULW:
+					p->as = AIMULQ;
+					break;
+				case AANDB:
+				case AANDW:
+					p->as = AANDQ;
+					break;
+				case AORB:
+				case AORW:
+					p->as = AORQ;
+					break;
+				case AXORB:
+				case AXORW:
+					p->as = AXORQ;
+					break;
+				case ASHLB:
+				case ASHLW:
+					p->as = ASHLQ;
+					break;
+				}
+			} else if(p->from.type >= D_NONE) {
+				// explicit zero extension, but don't
+				// do that if source is a byte register
+				// (only AH can occur and it's forbidden).
+				switch(p->as) {
+				case AMOVB:
+					p->as = AMOVBQZX;
+					break;
+				case AMOVW:
+					p->as = AMOVWQZX;
+					break;
+				}
+			}
+		}
+	}
+}
+
+static int
+regconsttyp(Adr *a)
+{
+	if(regtyp(a))
+		return 1;
+	switch(a->type) {
+	case D_CONST:
+	case D_FCONST:
+	case D_SCONST:
+	case D_ADDR:
+		return 1;
+	}
+	return 0;
+}
+
+// is reg guaranteed to be truncated by a previous L instruction?
+static int
+prevl(Reg *r0, int reg)
+{
+	Prog *p;
+	Reg *r;
+
+	for(r=uniqp(r0); r!=R; r=uniqp(r)) {
+		p = r->prog;
+		if(p->to.type == reg) {
+			switch(p->as) {
+			case AADDL:
+			case AANDL:
+			case ADECL:
+			case ADIVL:
+			case AIDIVL:
+			case AIMULL:
+			case AINCL:
+			case AMOVL:
+			case AMULL:
+			case AORL:
+			case ARCLL:
+			case ARCRL:
+			case AROLL:
+			case ARORL:
+			case ASALL:
+			case ASARL:
+			case ASHLL:
+			case ASHRL:
+			case ASUBL:
+			case AXORL:
+				return 1;
+			}
+			return 0;
+		}
+	}
+	return 0;
+}
+
 /*
  * the idea is to substitute
  * one register for another
@@ -357,19 +632,34 @@ subprop(Reg *r0)
 	Reg *r;
 	int t;
 
+	if(debug['P'] && debug['v'])
+		print("subprop %P\n", r0->prog);
 	p = r0->prog;
 	v1 = &p->from;
-	if(!regtyp(v1))
+	if(!regtyp(v1)) {
+		if(debug['P'] && debug['v'])
+			print("\tnot regtype %D; return 0\n", v1);
 		return 0;
+	}
 	v2 = &p->to;
-	if(!regtyp(v2))
+	if(!regtyp(v2)) {
+		if(debug['P'] && debug['v'])
+			print("\tnot regtype %D; return 0\n", v2);
 		return 0;
+	}
 	for(r=uniqp(r0); r!=R; r=uniqp(r)) {
-		if(uniqs(r) == R)
+		if(debug['P'] && debug['v'])
+			print("\t? %P\n", r->prog);
+		if(uniqs(r) == R) {
+			if(debug['P'] && debug['v'])
+				print("\tno unique successor\n");
 			break;
+		}
 		p = r->prog;
 		switch(p->as) {
 		case ACALL:
+			if(debug['P'] && debug['v'])
+				print("\tfound %P; return 0\n", p);
 			return 0;
 
 		case AIMULL:
@@ -377,20 +667,7 @@ subprop(Reg *r0)
 		case AIMULW:
 			if(p->to.type != D_NONE)
 				break;
-
-		case ADIVB:
-		case ADIVL:
-		case ADIVQ:
-		case ADIVW:
-		case AIDIVB:
-		case AIDIVL:
-		case AIDIVQ:
-		case AIDIVW:
-		case AIMULB:
-		case AMULB:
-		case AMULL:
-		case AMULQ:
-		case AMULW:
+			goto giveup;
 
 		case ARCLB:
 		case ARCLL:
@@ -424,6 +701,23 @@ subprop(Reg *r0)
 		case ASHRL:
 		case ASHRQ:
 		case ASHRW:
+			if(p->from.type == D_CONST)
+				break;
+			goto giveup;
+
+		case ADIVB:
+		case ADIVL:
+		case ADIVQ:
+		case ADIVW:
+		case AIDIVB:
+		case AIDIVL:
+		case AIDIVQ:
+		case AIDIVW:
+		case AIMULB:
+		case AMULB:
+		case AMULL:
+		case AMULQ:
+		case AMULW:
 
 		case AREP:
 		case AREPN:
@@ -438,21 +732,34 @@ subprop(Reg *r0)
 		case AMOVSB:
 		case AMOVSL:
 		case AMOVSQ:
+		giveup:
+			if(debug['P'] && debug['v'])
+				print("\tfound %P; return 0\n", p);
 			return 0;
 
 		case AMOVL:
 		case AMOVQ:
+		case AMOVSS:
+		case AMOVSD:
 			if(p->to.type == v1->type)
 				goto gotit;
 			break;
 		}
 		if(copyau(&p->from, v2) ||
-		   copyau(&p->to, v2))
+		   copyau(&p->to, v2)) {
+		   	if(debug['P'] && debug['v'])
+		   		print("\tcopyau %D failed\n", v2);
 			break;
+		}
 		if(copysub(&p->from, v1, v2, 0) ||
-		   copysub(&p->to, v1, v2, 0))
+		   copysub(&p->to, v1, v2, 0)) {
+		   	if(debug['P'] && debug['v'])
+		   		print("\tcopysub failed\n");
 			break;
+		}
 	}
+	if(debug['P'] && debug['v'])
+		print("\tran off end; return 0\n");
 	return 0;
 
 gotit:
@@ -497,6 +804,8 @@ copyprop(Reg *r0)
 	Adr *v1, *v2;
 	Reg *r;
 
+	if(debug['P'] && debug['v'])
+		print("copyprop %P\n", r0->prog);
 	p = r0->prog;
 	v1 = &p->from;
 	v2 = &p->to;
@@ -636,6 +945,7 @@ copyu(Prog *p, Adr *v, Adr *s)
 	case AMOVWLZX:
 	case AMOVWQSX:
 	case AMOVWQZX:
+	case AMOVQL:
 
 	case AMOVSS:
 	case AMOVSD:
@@ -853,8 +1163,6 @@ copyu(Prog *p, Adr *v, Adr *s)
 		return 0;
 
 	case ARET:	/* funny */
-		if(v->type == REGRET || v->type == FREGRET)
-			return 2;
 		if(s != A)
 			return 1;
 		return 3;
@@ -863,6 +1171,8 @@ copyu(Prog *p, Adr *v, Adr *s)
 		if(REGEXT && v->type <= REGEXT && v->type > exregoffset)
 			return 2;
 		if(REGARG >= 0 && v->type == (uchar)REGARG)
+			return 2;
+		if(v->type == p->from.type)
 			return 2;
 
 		if(s != A) {
@@ -907,13 +1217,22 @@ int
 copyau(Adr *a, Adr *v)
 {
 
-	if(copyas(a, v))
+	if(copyas(a, v)) {
+		if(debug['P'] && debug['v'])
+			print("\tcopyau: copyas returned 1\n");
 		return 1;
+	}
 	if(regtyp(v)) {
-		if(a->type-D_INDIR == v->type)
+		if(a->type-D_INDIR == v->type) {
+			if(debug['P'] && debug['v'])
+				print("\tcopyau: found indir use - return 1\n");
 			return 1;
-		if(a->index == v->type)
+		}
+		if(a->index == v->type) {
+			if(debug['P'] && debug['v'])
+				print("\tcopyau: found index use - return 1\n");
 			return 1;
+		}
 	}
 	return 0;
 }
@@ -990,7 +1309,7 @@ loop:
 		if(p->from.node == p0->from.node)
 		if(p->from.offset == p0->from.offset)
 		if(p->from.scale == p0->from.scale)
-		if(p->from.dval == p0->from.dval)
+		if(p->from.u.vval == p0->from.u.vval)
 		if(p->from.index == p0->from.index) {
 			excise(r);
 			goto loop;

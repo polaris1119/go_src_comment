@@ -8,6 +8,8 @@
 #define M0 (sizeof(uintptr)==4 ? 2860486313UL : 33054211828000289ULL)
 #define M1 (sizeof(uintptr)==4 ? 3267000013UL : 23344194077549503ULL)
 
+static bool use_aeshash;
+
 /*
  * map and chan helpers for
  * dealing with unknown types
@@ -17,39 +19,29 @@ runtime·memhash(uintptr *h, uintptr s, void *a)
 {
 	byte *b;
 	uintptr hash;
+	if(use_aeshash) {
+		runtime·aeshash(h, s, a);
+		return;
+	}
 
 	b = a;
-	hash = M0;
+	hash = M0 ^ *h;
 	while(s > 0) {
 		hash = (hash ^ *b) * M1;
 		b++;
 		s--;
 	}
-	*h = (*h ^ hash) * M1;
+	*h = hash;
 }
 
 void
 runtime·memequal(bool *eq, uintptr s, void *a, void *b)
 {
-	byte *ba, *bb, *aend;
-
 	if(a == b) {
 		*eq = 1;
 		return;
 	}
-	ba = a;
-	bb = b;
-	aend = ba+s;
-	while(ba != aend) {
-		if(*ba != *bb) {
-			*eq = 0;
-			return;
-		}
-		ba++;
-		bb++;
-	}
-	*eq = 1;
-	return;
+	*eq = runtime·memeq(a, b, s);
 }
 
 void
@@ -316,7 +308,8 @@ runtime·strhash(uintptr *h, uintptr s, void *a)
 void
 runtime·strequal(bool *eq, uintptr s, void *a, void *b)
 {
-	int32 alen;
+	intgo alen;
+	byte *s1, *s2;
 
 	USED(s);
 	alen = ((String*)a)->len;
@@ -324,7 +317,13 @@ runtime·strequal(bool *eq, uintptr s, void *a, void *b)
 		*eq = false;
 		return;
 	}
-	runtime·memequal(eq, alen, ((String*)a)->str, ((String*)b)->str);
+	s1 = ((String*)a)->str;
+	s2 = ((String*)b)->str;
+	if(s1 == s2) {
+		*eq = true;
+		return;
+	}
+	*eq = runtime·memeq(s1, s2, alen);
 }
 
 void
@@ -351,7 +350,7 @@ void
 runtime·interhash(uintptr *h, uintptr s, void *a)
 {
 	USED(s);
-	*h = (*h ^ runtime·ifacehash(*(Iface*)a)) * M1;
+	*h = runtime·ifacehash(*(Iface*)a, *h ^ M0) * M1;
 }
 
 void
@@ -385,7 +384,7 @@ void
 runtime·nilinterhash(uintptr *h, uintptr s, void *a)
 {
 	USED(s);
-	*h = (*h ^ runtime·efacehash(*(Eface*)a)) * M1;
+	*h = runtime·efacehash(*(Eface*)a, *h ^ M0) * M1;
 }
 
 void
@@ -462,6 +461,42 @@ runtime·algarray[] =
 };
 
 // Runtime helpers.
+
+// used in asm_{386,amd64}.s
+byte runtime·aeskeysched[HashRandomBytes];
+
+void
+runtime·hashinit(void)
+{
+	// Install aes hash algorithm if we have the instructions we need
+	if((runtime·cpuid_ecx & (1 << 25)) != 0 &&  // aes (aesenc)
+	   (runtime·cpuid_ecx & (1 << 9)) != 0 &&   // sse3 (pshufb)
+	   (runtime·cpuid_ecx & (1 << 19)) != 0) {  // sse4.1 (pinsr{d,q})
+		byte *rnd;
+		int32 n;
+		use_aeshash = true;
+		runtime·algarray[AMEM].hash = runtime·aeshash;
+		runtime·algarray[AMEM8].hash = runtime·aeshash;
+		runtime·algarray[AMEM16].hash = runtime·aeshash;
+		runtime·algarray[AMEM32].hash = runtime·aeshash32;
+		runtime·algarray[AMEM64].hash = runtime·aeshash64;
+		runtime·algarray[AMEM128].hash = runtime·aeshash;
+		runtime·algarray[ASTRING].hash = runtime·aeshashstr;
+
+		// Initialize with random data so hash collisions will be hard to engineer.
+		runtime·get_random_data(&rnd, &n);
+		if(n > HashRandomBytes)
+			n = HashRandomBytes;
+		runtime·memmove(runtime·aeskeysched, rnd, n);
+		if(n < HashRandomBytes) {
+			// Not very random, but better than nothing.
+			int64 t = runtime·nanotime();
+			while (n < HashRandomBytes) {
+				runtime·aeskeysched[n++] = (int8)(t >> (8 * (n % 8)));
+			}
+		}
+	}
+}
 
 // func equal(t *Type, x T, y T) (ret bool)
 #pragma textflag 7

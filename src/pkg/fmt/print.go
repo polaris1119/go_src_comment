@@ -26,8 +26,8 @@ var (
 	extraBytes      = []byte("%!(EXTRA ")
 	irparenBytes    = []byte("i)")
 	bytesBytes      = []byte("[]byte{")
-	widthBytes      = []byte("%!(BADWIDTH)")
-	precBytes       = []byte("%!(BADPREC)")
+	badWidthBytes   = []byte("%!(BADWIDTH)")
+	badPrecBytes    = []byte("%!(BADPREC)")
 	noVerbBytes     = []byte("%!(NOVERB)")
 )
 
@@ -47,7 +47,7 @@ type State interface {
 }
 
 // Formatter is the interface implemented by values with a custom formatter.
-// The implementation of Format may call Sprintf or Fprintf(f) etc.
+// The implementation of Format may call Sprint(f) or Fprint(f) etc.
 // to generate its output.
 type Formatter interface {
 	Format(f State, c rune)
@@ -56,7 +56,8 @@ type Formatter interface {
 // Stringer is implemented by any value that has a String method,
 // which defines the ``native'' format for that value.
 // The String method is used to print values passed as an operand
-// to a %s or %v format or to an unformatted printer such as Print.
+// to any format that accepts a string or to an unformatted printer
+// such as Print.
 type Stringer interface {
 	String() string
 }
@@ -153,7 +154,7 @@ func newCache(f func() interface{}) *cache {
 
 var ppFree = newCache(func() interface{} { return new(pp) })
 
-// Allocate a new pp struct or grab a cached one.
+// newPrinter allocates a new pp struct or grab a cached one.
 func newPrinter() *pp {
 	p := ppFree.get().(*pp)
 	p.panicking = false
@@ -162,7 +163,7 @@ func newPrinter() *pp {
 	return p
 }
 
-// Save used pp structs in ppFree; avoids an allocation per invocation.
+// free saves used pp structs in ppFree; avoids an allocation per invocation.
 func (p *pp) free() {
 	// Don't hold on to pp structs with large buffers.
 	if cap(p.buf) > 1024 {
@@ -231,7 +232,7 @@ func Sprintf(format string, a ...interface{}) string {
 	return s
 }
 
-// Errorf formats according to a format specifier and returns the string 
+// Errorf formats according to a format specifier and returns the string
 // as a value that satisfies error.
 func Errorf(format string, a ...interface{}) error {
 	return errors.New(Sprintf(format, a...))
@@ -299,7 +300,7 @@ func Sprintln(a ...interface{}) string {
 	return s
 }
 
-// Get the i'th arg of the struct value.
+// getField gets the i'th arg of the struct value.
 // If the arg itself is an interface, return a value for
 // the thing inside the interface, not the interface itself.
 func getField(v reflect.Value, i int) reflect.Value {
@@ -310,7 +311,7 @@ func getField(v reflect.Value, i int) reflect.Value {
 	return val
 }
 
-// Convert ASCII to integer.  n is 0 (and got is false) if no number present.
+// parsenum converts ASCII to integer.  num is 0 (and isnum is false) if no number present.
 func parsenum(s string, start, end int) (num int, isnum bool, newi int) {
 	if start >= end {
 		return 0, false, end
@@ -545,10 +546,15 @@ func (p *pp) fmtString(v string, verb rune, goSyntax bool) {
 	}
 }
 
-func (p *pp) fmtBytes(v []byte, verb rune, goSyntax bool, depth int) {
+func (p *pp) fmtBytes(v []byte, verb rune, goSyntax bool, typ reflect.Type, depth int) {
 	if verb == 'v' || verb == 'd' {
 		if goSyntax {
-			p.buf.Write(bytesBytes)
+			if typ == nil {
+				p.buf.Write(bytesBytes)
+			} else {
+				p.buf.WriteString(typ.String())
+				p.buf.WriteByte('{')
+			}
 		} else {
 			p.buf.WriteByte('[')
 		}
@@ -569,24 +575,27 @@ func (p *pp) fmtBytes(v []byte, verb rune, goSyntax bool, depth int) {
 		}
 		return
 	}
-	s := string(v)
 	switch verb {
 	case 's':
-		p.fmt.fmt_s(s)
+		p.fmt.fmt_s(string(v))
 	case 'x':
-		p.fmt.fmt_sx(s, ldigits)
+		p.fmt.fmt_bx(v, ldigits)
 	case 'X':
-		p.fmt.fmt_sx(s, udigits)
+		p.fmt.fmt_bx(v, udigits)
 	case 'q':
-		p.fmt.fmt_q(s)
+		p.fmt.fmt_q(string(v))
 	default:
 		p.badVerb(verb)
 	}
 }
 
 func (p *pp) fmtPointer(value reflect.Value, verb rune, goSyntax bool) {
+	use0x64 := true
 	switch verb {
-	case 'p', 'v', 'b', 'd', 'o', 'x', 'X':
+	case 'p', 'v':
+		// ok
+	case 'b', 'd', 'o', 'x', 'X':
+		use0x64 = false
 		// ok
 	default:
 		p.badVerb(verb)
@@ -616,7 +625,11 @@ func (p *pp) fmtPointer(value reflect.Value, verb rune, goSyntax bool) {
 	} else if verb == 'v' && u == 0 {
 		p.buf.Write(nilAngleBytes)
 	} else {
-		p.fmt0x64(uint64(u), !p.fmt.sharp)
+		if use0x64 {
+			p.fmt0x64(uint64(u), !p.fmt.sharp)
+		} else {
+			p.fmtUint64(uint64(u), verb, false)
+		}
 	}
 }
 
@@ -717,7 +730,7 @@ func (p *pp) printField(field interface{}, verb rune, plus, goSyntax bool, depth
 
 	if field == nil {
 		if verb == 'T' || verb == 'v' {
-			p.buf.Write(nilAngleBytes)
+			p.fmt.pad(nilAngleBytes)
 		} else {
 			p.badVerb(verb)
 		}
@@ -735,8 +748,17 @@ func (p *pp) printField(field interface{}, verb rune, plus, goSyntax bool, depth
 		return false
 	}
 
-	if wasString, handled := p.handleMethods(verb, plus, goSyntax, depth); handled {
-		return wasString
+	// Clear flags for base formatters.
+	// handleMethods needs them, so we must restore them later.
+	// We could call handleMethods here and avoid this work, but
+	// handleMethods is expensive enough to be worth delaying.
+	oldPlus := p.fmt.plus
+	oldSharp := p.fmt.sharp
+	if plus {
+		p.fmt.plus = false
+	}
+	if goSyntax {
+		p.fmt.sharp = false
 	}
 
 	// Some types can be done without reflection.
@@ -777,9 +799,16 @@ func (p *pp) printField(field interface{}, verb rune, plus, goSyntax bool, depth
 		p.fmtString(f, verb, goSyntax)
 		wasString = verb == 's' || verb == 'v'
 	case []byte:
-		p.fmtBytes(f, verb, goSyntax, depth)
+		p.fmtBytes(f, verb, goSyntax, nil, depth)
 		wasString = verb == 's'
 	default:
+		// Restore flags in case handleMethods finds a Formatter.
+		p.fmt.plus = oldPlus
+		p.fmt.sharp = oldSharp
+		// If the type is not simple, it might have methods.
+		if wasString, handled := p.handleMethods(verb, plus, goSyntax, depth); handled {
+			return wasString
+		}
 		// Need to use reflection
 		return p.printReflectValue(reflect.ValueOf(field), verb, plus, goSyntax, depth)
 	}
@@ -916,19 +945,22 @@ BigSwitch:
 		}
 	case reflect.Array, reflect.Slice:
 		// Byte slices are special.
-		if f.Type().Elem().Kind() == reflect.Uint8 {
-			// We know it's a slice of bytes, but we also know it does not have static type
-			// []byte, or it would have been caught above.  Therefore we cannot convert
-			// it directly in the (slightly) obvious way: f.Interface().([]byte); it doesn't have
-			// that type, and we can't write an expression of the right type and do a
-			// conversion because we don't have a static way to write the right type.
-			// So we build a slice by hand.  This is a rare case but it would be nice
-			// if reflection could help a little more.
-			bytes := make([]byte, f.Len())
-			for i := range bytes {
-				bytes[i] = byte(f.Index(i).Uint())
+		if typ := f.Type(); typ.Elem().Kind() == reflect.Uint8 {
+			var bytes []byte
+			if f.Kind() == reflect.Slice {
+				bytes = f.Bytes()
+			} else if f.CanAddr() {
+				bytes = f.Slice(0, f.Len()).Bytes()
+			} else {
+				// We have an array, but we cannot Slice() a non-addressable array,
+				// so we build a slice by hand. This is a rare case but it would be nice
+				// if reflection could help a little more.
+				bytes = make([]byte, f.Len())
+				for i := range bytes {
+					bytes[i] = byte(f.Index(i).Uint())
+				}
 			}
-			p.fmtBytes(bytes, verb, goSyntax, depth)
+			p.fmtBytes(bytes, verb, goSyntax, typ, depth)
 			wasString = verb == 's'
 			break
 		}
@@ -1034,17 +1066,17 @@ func (p *pp) doPrintf(format string, a []interface{}) {
 		if i < end && format[i] == '*' {
 			p.fmt.wid, p.fmt.widPresent, i, fieldnum = intFromArg(a, end, i, fieldnum)
 			if !p.fmt.widPresent {
-				p.buf.Write(widthBytes)
+				p.buf.Write(badWidthBytes)
 			}
 		} else {
 			p.fmt.wid, p.fmt.widPresent, i = parsenum(format, i, end)
 		}
 		// do we have precision?
-		if i < end && format[i] == '.' {
+		if i+1 < end && format[i] == '.' {
 			if format[i+1] == '*' {
 				p.fmt.prec, p.fmt.precPresent, i, fieldnum = intFromArg(a, end, i+1, fieldnum)
 				if !p.fmt.precPresent {
-					p.buf.Write(precBytes)
+					p.buf.Write(badPrecBytes)
 				}
 			} else {
 				p.fmt.prec, p.fmt.precPresent, i = parsenum(format, i+1, end)
@@ -1100,7 +1132,7 @@ func (p *pp) doPrint(a []interface{}, addspace, addnewline bool) {
 	prevString := false
 	for fieldnum := 0; fieldnum < len(a); fieldnum++ {
 		p.fmt.clearflags()
-		// always add spaces if we're doing println
+		// always add spaces if we're doing Println
 		field := a[fieldnum]
 		if fieldnum > 0 {
 			isString := field != nil && reflect.TypeOf(field).Kind() == reflect.String

@@ -16,6 +16,7 @@ var cmdRun = &Command{
 	Short:     "compile and run Go program",
 	Long: `
 Run compiles and runs the main package comprising the named Go source files.
+If no files are named, it compiles and runs all non-test Go source files.
 
 For more about build flags, see 'go help build'.
 
@@ -34,6 +35,7 @@ func printStderr(args ...interface{}) (int, error) {
 }
 
 func runRun(cmd *Command, args []string) {
+	raceInit()
 	var b builder
 	b.init()
 	b.print = printStderr
@@ -44,6 +46,13 @@ func runRun(cmd *Command, args []string) {
 	files, cmdArgs := args[:i], args[i:]
 	if len(files) == 0 {
 		fatalf("go run: no go files listed")
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			// goFilesPackage is going to assign this to TestGoFiles.
+			// Reject since it won't be part of the build.
+			fatalf("go run: cannot run *_test.go files (%s)", file)
+		}
 	}
 	p := goFilesPackage(files)
 	if p.Error != nil {
@@ -57,6 +66,21 @@ func runRun(cmd *Command, args []string) {
 		fatalf("go run: cannot run non-main package")
 	}
 	p.target = "" // must build - not up to date
+	var src string
+	if len(p.GoFiles) > 0 {
+		src = p.GoFiles[0]
+	} else if len(p.CgoFiles) > 0 {
+		src = p.CgoFiles[0]
+	} else {
+		// this case could only happen if the provided source uses cgo
+		// while cgo is disabled.
+		hint := ""
+		if !buildContext.CgoEnabled {
+			hint = " (cgo is disabled)"
+		}
+		fatalf("go run: no suitable source files%s", hint)
+	}
+	p.exeName = src[:len(src)-len(".go")] // name temporary executable for first go file
 	a1 := b.action(modeBuild, modeBuild, p)
 	a := &action{f: (*builder).runProgram, args: cmdArgs, deps: []*action{a1}}
 	b.do(a)
@@ -83,6 +107,7 @@ func runStdin(cmdargs ...interface{}) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	startSigHandlers()
 	if err := cmd.Run(); err != nil {
 		errorf("%v", err)
 	}

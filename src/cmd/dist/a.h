@@ -10,7 +10,9 @@ typedef long long Time;
 
 #define nil ((void*)0)
 #define nelem(x) (sizeof(x)/sizeof((x)[0]))
+#ifndef PLAN9
 #define USED(x) ((void)(x))
+#endif
 
 // A Buf is a byte buffer, like Go's []byte.
 typedef struct Buf Buf;
@@ -70,6 +72,7 @@ extern char *gohostos;
 extern char *goos;
 extern char *goroot;
 extern char *goroot_final;
+extern char *goextlinkenabled;
 extern char *goversion;
 extern char *workdir;
 extern char *tooldir;
@@ -106,6 +109,7 @@ void	xmain(int argc, char **argv);
 
 // portability layer (plan9.c, unix.c, windows.c)
 bool	contains(char *p, char *sep);
+void	errprintf(char*, ...);
 void	fatal(char *msg, ...);
 bool	hasprefix(char *p, char *prefix);
 bool	hassuffix(char *p, char *suffix);
@@ -120,6 +124,7 @@ void	runv(Buf *b, char *dir, int mode, Vec *argv);
 void	bgrunv(char *dir, int mode, Vec *argv);
 void	bgwait(void);
 bool	streq(char*, char*);
+bool	cansse2(void);
 void	writefile(Buf*, char*, int);
 void	xatexit(void (*f)(void));
 void	xexit(int);
@@ -147,3 +152,6 @@ int	xstrlen(char*);
 char*	xstrrchr(char*, int);
 char*	xstrstr(char*, char*);
 char*	xworkdir(void);
+int	xsamefile(char*, char*);
+char*	xgetgoarm(void);
+int	xtryexecfunc(void (*)(void));

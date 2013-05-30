@@ -38,8 +38,9 @@ TEXT runtime·thr_start(SB),7,$0
 	MOVQ	m_g0(R13), DI
 	MOVQ	DI, g(CX)
 
-	CALL runtime·stackcheck(SB)
-	CALL runtime·mstart(SB)
+	CALL	runtime·stackcheck(SB)
+	CALL	runtime·mstart(SB)
+
 	MOVQ 0, AX			// crash (not reached)
 
 // Exit the entire program (like C exit)
@@ -57,6 +58,28 @@ TEXT runtime·exit1(SB),7,$-8
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
+TEXT runtime·open(SB),7,$-8
+	MOVQ	8(SP), DI		// arg 1 pathname
+	MOVL	16(SP), SI		// arg 2 flags
+	MOVL	20(SP), DX		// arg 3 mode
+	MOVL	$5, AX
+	SYSCALL
+	RET
+
+TEXT runtime·close(SB),7,$-8
+	MOVL	8(SP), DI		// arg 1 fd
+	MOVL	$6, AX
+	SYSCALL
+	RET
+
+TEXT runtime·read(SB),7,$-8
+	MOVL	8(SP), DI		// arg 1 fd
+	MOVQ	16(SP), SI		// arg 2 buf
+	MOVL	24(SP), DX		// arg 3 count
+	MOVL	$3, AX
+	SYSCALL
+	RET
+
 TEXT runtime·write(SB),7,$-8
 	MOVL	8(SP), DI		// arg 1 fd
 	MOVQ	16(SP), SI		// arg 2 buf
@@ -72,14 +95,14 @@ TEXT runtime·getrlimit(SB),7,$-8
 	SYSCALL
 	RET
 
-TEXT runtime·raisesigpipe(SB),7,$16
+TEXT runtime·raise(SB),7,$16
 	// thr_self(&8(SP))
 	LEAQ	8(SP), DI	// arg 1 &8(SP)
 	MOVL	$432, AX
 	SYSCALL
 	// thr_kill(self, SIGPIPE)
 	MOVQ	8(SP), DI	// arg 1 id
-	MOVQ	$13, SI	// arg 2 SIGPIPE
+	MOVL	sig+0(FP), SI	// arg 2
 	MOVL	$433, AX
 	SYSCALL
 	RET
@@ -94,31 +117,29 @@ TEXT runtime·setitimer(SB), 7, $-8
 
 // func now() (sec int64, nsec int32)
 TEXT time·now(SB), 7, $32
-	MOVL	$116, AX
-	LEAQ	8(SP), DI
-	MOVQ	$0, SI
+	MOVL	$232, AX
+	MOVQ	$0, DI
+	LEAQ	8(SP), SI
 	SYSCALL
 	MOVQ	8(SP), AX	// sec
-	MOVL	16(SP), DX	// usec
+	MOVQ	16(SP), DX	// nsec
 
-	// sec is in AX, usec in DX
+	// sec is in AX, nsec in DX
 	MOVQ	AX, sec+0(FP)
-	IMULQ	$1000, DX
 	MOVL	DX, nsec+8(FP)
 	RET
 
 TEXT runtime·nanotime(SB), 7, $32
-	MOVL	$116, AX
-	LEAQ	8(SP), DI
-	MOVQ	$0, SI
+	MOVL	$232, AX
+	MOVQ	$0, DI
+	LEAQ	8(SP), SI
 	SYSCALL
 	MOVQ	8(SP), AX	// sec
-	MOVL	16(SP), DX	// usec
+	MOVQ	16(SP), DX	// nsec
 
-	// sec is in AX, usec in DX
+	// sec is in AX, nsec in DX
 	// return nsec in AX
 	IMULQ	$1000000000, AX
-	IMULQ	$1000, DX
 	ADDQ	DX, AX
 	RET
 
@@ -138,8 +159,10 @@ TEXT runtime·sigtramp(SB),7,$64
 	// check that m exists
 	MOVQ	m(BX), BP
 	CMPQ	BP, $0
-	JNE	2(PC)
+	JNE	4(PC)
+	MOVQ	DI, 0(SP)
 	CALL	runtime·badsignal(SB)
+	RET
 
 	// save g
 	MOVQ	g(BX), R10
@@ -182,6 +205,15 @@ TEXT runtime·munmap(SB),7,$0
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
+TEXT runtime·madvise(SB),7,$0
+	MOVQ	8(SP), DI
+	MOVQ	16(SP), SI
+	MOVQ	24(SP), DX
+	MOVQ	$75, AX	// madvise
+	SYSCALL
+	// ignore failure - maybe pages are locked
+	RET
+	
 TEXT runtime·sigaltstack(SB),7,$-8
 	MOVQ	new+8(SP), DI
 	MOVQ	old+16(SP), SI
@@ -229,7 +261,7 @@ TEXT runtime·sysctl(SB),7,$0
 	MOVQ	$202, AX		// sys___sysctl
 	SYSCALL
 	JCC 3(PC)
-	NEGL	AX
+	NEGQ	AX
 	RET
 	MOVL	$0, AX
 	RET

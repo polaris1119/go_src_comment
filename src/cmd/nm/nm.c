@@ -43,7 +43,7 @@ enum{
 
 char	*errs;			/* exit status */
 char	*filename;		/* current file */
-char	symname[]="__.SYMDEF";	/* table of contents file name */
+char	symname[]="__.GOSYMDEF";	/* table of contents file name */
 int	multifile;		/* processing multiple files */
 int	aflag;
 int	gflag;
@@ -275,11 +275,13 @@ psym(Sym *s, void* p)
 			return;
 		break;
 	case 'm':
+		if(!aflag || uflag || gflag)
+			return;
+		break;
 	case 'f':	/* we only see a 'z' when the following is true*/
 		if(!aflag || uflag || gflag)
 			return;
-		if (strcmp(s->name, ".frame"))
-			zenter(s);
+		zenter(s);
 		break;
 	case 'a':
 	case 'p':

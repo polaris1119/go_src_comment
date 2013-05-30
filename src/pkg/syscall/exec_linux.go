@@ -16,8 +16,9 @@ type SysProcAttr struct {
 	Ptrace     bool        // Enable tracing.
 	Setsid     bool        // Create session.
 	Setpgid    bool        // Set process group ID to new pid (SYSV setpgrp)
-	Setctty    bool        // Set controlling terminal to fd 0
+	Setctty    bool        // Set controlling terminal to fd Ctty (only meaningful if Setsid is set)
 	Noctty     bool        // Detach fd 0 from controlling terminal
+	Ctty       int         // Controlling TTY fd (Linux only)
 	Pdeathsig  Signal      // Signal that the process will get when its parent dies (Linux only)
 }
 
@@ -39,11 +40,18 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 		i      int
 	)
 
-	// guard against side effects of shuffling fds below.
+	// Guard against side effects of shuffling fds below.
+	// Make sure that nextfd is beyond any currently open files so
+	// that we can't run the risk of overwriting any of them.
 	fd := make([]int, len(attr.Files))
+	nextfd = len(attr.Files)
 	for i, ufd := range attr.Files {
+		if nextfd < int(ufd) {
+			nextfd = int(ufd)
+		}
 		fd[i] = int(ufd)
 	}
+	nextfd++
 
 	// About to call fork.
 	// No more allocation or calls of non-assembly functions.
@@ -142,7 +150,6 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 
 	// Pass 1: look for fd[i] < i and move those up above len(fd)
 	// so that pass 2 won't stomp on an fd it needs later.
-	nextfd = int(len(fd))
 	if pipe < nextfd {
 		_, _, err1 = RawSyscall(SYS_DUP2, uintptr(pipe), uintptr(nextfd), 0)
 		if err1 != 0 {
@@ -206,9 +213,9 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 		}
 	}
 
-	// Make fd 0 the tty
-	if sys.Setctty {
-		_, _, err1 = RawSyscall(SYS_IOCTL, 0, uintptr(TIOCSCTTY), 0)
+	// Set the controlling TTY to Ctty
+	if sys.Setctty && sys.Ctty >= 0 {
+		_, _, err1 = RawSyscall(SYS_IOCTL, uintptr(sys.Ctty), uintptr(TIOCSCTTY), 0)
 		if err1 != 0 {
 			goto childerror
 		}
@@ -231,4 +238,21 @@ childerror:
 	// but the for loop above won't break
 	// and this shuts up the compiler.
 	panic("unreached")
+}
+
+// Try to open a pipe with O_CLOEXEC set on both file descriptors.
+func forkExecPipe(p []int) (err error) {
+	err = Pipe2(p, O_CLOEXEC)
+	// pipe2 was added in 2.6.27 and our minimum requirement is 2.6.23, so it
+	// might not be implemented.
+	if err == ENOSYS {
+		if err = Pipe(p); err != nil {
+			return
+		}
+		if _, err = fcntl(p[0], F_SETFD, FD_CLOEXEC); err != nil {
+			return
+		}
+		_, err = fcntl(p[1], F_SETFD, FD_CLOEXEC)
+	}
+	return
 }

@@ -54,13 +54,13 @@ TEXT ·Log(SB),7,$0
 	// s := f / (2 + f)
 	MOVSD   $2.0, X0
 	ADDSD   X2, X0
-	MOVSD   X2, X3
+	MOVAPD  X2, X3
 	DIVSD   X0, X3 // x1=k, x2= f, x3= s
 	// s2 := s * s
-	MOVSD   X3, X4 // x1= k, x2= f, x3= s
+	MOVAPD  X3, X4 // x1= k, x2= f, x3= s
 	MULSD   X4, X4 // x1= k, x2= f, x3= s, x4= s2
 	// s4 := s2 * s2
-	MOVSD   X4, X5 // x1= k, x2= f, x3= s, x4= s2
+	MOVAPD  X4, X5 // x1= k, x2= f, x3= s, x4= s2
 	MULSD   X5, X5 // x1= k, x2= f, x3= s, x4= s2, x5= s4
 	// t1 := s2 * (L1 + s4*(L3+s4*(L5+s4*L7)))
 	MOVSD   $L7, X6
@@ -94,16 +94,16 @@ TEXT ·Log(SB),7,$0
 	SUBSD   X2, X0 // x0= (hfsq-(s*(hfsq+R)+k*Ln2Lo))-f, x1= k
 	MULSD   $Ln2Hi, X1 // x0= (hfsq-(s*(hfsq+R)+k*Ln2Lo))-f, x1= k*Ln2Hi
 	SUBSD   X0, X1 // x1= k*Ln2Hi-((hfsq-(s*(hfsq+R)+k*Ln2Lo))-f)
-  	MOVSD   X1, r+8(FP)
+  	MOVSD   X1, ret+8(FP)
 	RET
 isInfOrNaN:
-	MOVQ    BX, r+8(FP) // +Inf or NaN, return x
+	MOVQ    BX, ret+8(FP) // +Inf or NaN, return x
 	RET
 isNegative:
 	MOVQ    $NaN, AX
-	MOVQ    AX, r+8(FP) // return NaN
+	MOVQ    AX, ret+8(FP) // return NaN
 	RET
 isZero:
 	MOVQ    $NegInf, AX
-	MOVQ    AX, r+8(FP) // return -Inf
+	MOVQ    AX, ret+8(FP) // return -Inf
 	RET

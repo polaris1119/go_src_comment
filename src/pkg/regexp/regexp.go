@@ -8,6 +8,8 @@
 // general syntax used by Perl, Python, and other languages.
 // More precisely, it is the syntax accepted by RE2 and described at
 // http://code.google.com/p/re2/wiki/Syntax, except for \C.
+// For an overview of the syntax, run
+//   godoc regexp/syntax
 //
 // All characters are UTF-8-encoded code points.
 //
@@ -27,11 +29,11 @@
 // of bytes; return values are adjusted as appropriate.
 //
 // If 'Submatch' is present, the return value is a slice identifying the
-// successive submatches of the expression.  Submatches are matches of
-// parenthesized subexpressions within the regular expression, numbered from
-// left to right in order of opening parenthesis.  Submatch 0 is the match of
-// the entire expression, submatch 1 the match of the first parenthesized
-// subexpression, and so on.
+// successive submatches of the expression. Submatches are matches of
+// parenthesized subexpressions (also known as capturing groups) within the
+// regular expression, numbered from left to right in order of opening
+// parenthesis. Submatch 0 is the match of the entire expression, submatch 1
+// the match of the first parenthesized subexpression, and so on.
 //
 // If 'Index' is present, matches and submatches are identified by byte index
 // pairs within the input string: result[2*n:2*n+1] identifies the indexes of
@@ -128,6 +130,14 @@ func Compile(expr string) (*Regexp, error) {
 // See http://swtch.com/~rsc/regexp/regexp2.html#posix for details.
 func CompilePOSIX(expr string) (*Regexp, error) {
 	return compile(expr, syntax.POSIX, true)
+}
+
+// Longest makes future searches prefer the leftmost-longest match.
+// That is, when matching against text, the regexp returns a match that
+// begins as early as possible in the input (leftmost), and among those
+// it chooses a match that is as long as possible.
+func (re *Regexp) Longest() {
+	re.longest = true
 }
 
 func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
@@ -387,7 +397,7 @@ func (re *Regexp) Match(b []byte) bool {
 // MatchReader checks whether a textual regular expression matches the text
 // read by the RuneReader.  More complicated queries need to use Compile and
 // the full Regexp interface.
-func MatchReader(pattern string, r io.RuneReader) (matched bool, error error) {
+func MatchReader(pattern string, r io.RuneReader) (matched bool, err error) {
 	re, err := Compile(pattern)
 	if err != nil {
 		return false, err
@@ -398,7 +408,7 @@ func MatchReader(pattern string, r io.RuneReader) (matched bool, error error) {
 // MatchString checks whether a textual regular expression
 // matches a string.  More complicated queries need
 // to use Compile and the full Regexp interface.
-func MatchString(pattern string, s string) (matched bool, error error) {
+func MatchString(pattern string, s string) (matched bool, err error) {
 	re, err := Compile(pattern)
 	if err != nil {
 		return false, err
@@ -409,7 +419,7 @@ func MatchString(pattern string, s string) (matched bool, error error) {
 // Match checks whether a textual regular expression
 // matches a byte slice.  More complicated queries need
 // to use Compile and the full Regexp interface.
-func Match(pattern string, b []byte) (matched bool, error error) {
+func Match(pattern string, b []byte) (matched bool, err error) {
 	re, err := Compile(pattern)
 	if err != nil {
 		return false, err
@@ -720,7 +730,7 @@ func (re *Regexp) FindSubmatch(b []byte) [][]byte {
 // append, Expand replaces variables in the template with corresponding
 // matches drawn from src.  The match slice should have been returned by
 // FindSubmatchIndex.
-// 
+//
 // In the template, a variable is denoted by a substring of the form
 // $name or ${name}, where name is a non-empty sequence of letters,
 // digits, and underscores.  A purely numeric name like $1 refers to
@@ -728,10 +738,10 @@ func (re *Regexp) FindSubmatch(b []byte) [][]byte {
 // capturing parentheses named with the (?P<name>...) syntax.  A
 // reference to an out of range or unmatched index or a name that is not
 // present in the regular expression is replaced with an empty slice.
-// 
+//
 // In the $name form, name is taken to be as long as possible: $1x is
 // equivalent to ${1x}, not ${1}x, and, $10 is equivalent to ${10}, not ${1}0.
-// 
+//
 // To insert a literal $ in the output, use $$ in the template.
 func (re *Regexp) Expand(dst []byte, template []byte, src []byte, match []int) []byte {
 	return re.expand(dst, string(template), src, "", match)
@@ -767,7 +777,7 @@ func (re *Regexp) expand(dst []byte, template string, bsrc []byte, src string, m
 		}
 		template = rest
 		if num >= 0 {
-			if 2*num+1 < len(match) {
+			if 2*num+1 < len(match) && match[2*num] >= 0 {
 				if bsrc != nil {
 					dst = append(dst, bsrc[match[2*num]:match[2*num+1]]...)
 				} else {
@@ -1047,4 +1057,53 @@ func (re *Regexp) FindAllStringSubmatchIndex(s string, n int) [][]int {
 		return nil
 	}
 	return result
+}
+
+// Split slices s into substrings separated by the expression and returns a slice of
+// the substrings between those expression matches.
+//
+// The slice returned by this method consists of all the substrings of s
+// not contained in the slice returned by FindAllString. When called on an expression
+// that contains no metacharacters, it is equivalent to strings.SplitN.
+//
+// Example:
+//   s := regexp.MustCompile("a*").Split("abaabaccadaaae", 5)
+//   // s: ["", "b", "b", "c", "cadaaae"]
+//
+// The count determines the number of substrings to return:
+//   n > 0: at most n substrings; the last substring will be the unsplit remainder.
+//   n == 0: the result is nil (zero substrings)
+//   n < 0: all substrings
+func (re *Regexp) Split(s string, n int) []string {
+
+	if n == 0 {
+		return nil
+	}
+
+	if len(re.expr) > 0 && len(s) == 0 {
+		return []string{""}
+	}
+
+	matches := re.FindAllStringIndex(s, n)
+	strings := make([]string, 0, len(matches))
+
+	beg := 0
+	end := 0
+	for _, match := range matches {
+		if n > 0 && len(strings) >= n-1 {
+			break
+		}
+
+		end = match[0]
+		if match[1] != 0 {
+			strings = append(strings, s[beg:end])
+		}
+		beg = match[1]
+	}
+
+	if end != len(s) {
+		strings = append(strings, s[beg:])
+	}
+
+	return strings
 }

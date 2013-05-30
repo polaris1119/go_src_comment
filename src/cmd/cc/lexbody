@@ -47,15 +47,9 @@ pragvararg(void)
 }
 
 void
-pragdynimport(void)
+pragcgo(char *name)
 {
-	while(getnsc() != '\n')
-		;
-}
-
-void
-pragdynexport(void)
-{
+	USED(name);
 	while(getnsc() != '\n')
 		;
 }
@@ -244,10 +238,15 @@ lookup(void)
 		symb[1] = '"';
 	}
 
-	// turn · into .
 	for(r=w=symb; *r; r++) {
+		// turn · (U+00B7) into .
+		// turn ∕ (U+2215) into /
 		if((uchar)*r == 0xc2 && (uchar)*(r+1) == 0xb7) {
 			*w++ = '.';
+			r++;
+		}else if((uchar)*r == 0xe2 && (uchar)*(r+1) == 0x88 && (uchar)*(r+2) == 0x95) {
+			*w++ = '/';
+			r++;
 			r++;
 		}else
 			*w++ = *r;
@@ -264,7 +263,7 @@ lookup(void)
 	for(s = hash[h]; s != S; s = s->link) {
 		if(s->name[0] != c)
 			continue;
-		if(memcmp(s->name, symb, l) == 0)
+		if(strcmp(s->name, symb) == 0)
 			return s;
 	}
 	s = alloc(sizeof(*s));

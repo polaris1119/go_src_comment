@@ -308,8 +308,18 @@ uchar ElfMagic[4] = { 0x7F, 'E', 'L', 'F' };
 
 static ElfSect*	section(ElfObj*, char*);
 static int	map(ElfObj*, ElfSect*);
-static int	readsym(ElfObj*, int i, ElfSym*);
+static int	readsym(ElfObj*, int i, ElfSym*, int);
 static int	reltype(char*, int, uchar*);
+
+int
+valuecmp(Sym *a, Sym *b)
+{
+	if(a->value < b->value)
+		return -1;
+	if(a->value > b->value)
+		return +1;
+	return 0;
+}
 
 void
 ldelf(Biobuf *f, char *pkg, int64 len, char *pn)
@@ -327,8 +337,10 @@ ldelf(Biobuf *f, char *pkg, int64 len, char *pn)
 	Endian *e;
 	Reloc *r, *rp;
 	Sym *s;
+	Sym **symbols;
 
-	USED(pkg);
+	symbols = nil;
+
 	if(debug['v'])
 		Bprint(&bso, "%5.2f ldelf %s\n", cputime(), pn);
 
@@ -516,7 +528,7 @@ ldelf(Biobuf *f, char *pkg, int64 len, char *pn)
 		if(sect->type != ElfSectNobits && map(obj, sect) < 0)
 			goto bad;
 		
-		name = smprint("%s(%s)", pn, sect->name);
+		name = smprint("%s(%s)", pkg, sect->name);
 		s = lookup(name, version);
 		free(name);
 		switch((int)sect->flags&(ElfSectFlagAlloc|ElfSectFlagWrite|ElfSectFlagExec)) {
@@ -539,15 +551,97 @@ ldelf(Biobuf *f, char *pkg, int64 len, char *pn)
 		}
 		s->size = sect->size;
 		s->align = sect->align;
+		sect->sym = s;
+	}
+
+	// enter sub-symbols into symbol table.
+	// symbol 0 is the null symbol.
+	symbols = malloc(obj->nsymtab * sizeof(symbols[0]));
+	if(symbols == nil) {
+		diag("out of memory");
+		errorexit();
+	}
+	for(i=1; i<obj->nsymtab; i++) {
+		if(readsym(obj, i, &sym, 1) < 0)
+			goto bad;
+		symbols[i] = sym.sym;
+		if(sym.type != ElfSymTypeFunc && sym.type != ElfSymTypeObject && sym.type != ElfSymTypeNone)
+			continue;
+		if(sym.shndx == ElfSymShnCommon) {
+			s = sym.sym;
+			if(s->size < sym.size)
+				s->size = sym.size;
+			if(s->type == 0 || s->type == SXREF)
+				s->type = SBSS;
+			continue;
+		}
+		if(sym.shndx >= obj->nsect || sym.shndx == 0)
+			continue;
+		// even when we pass needSym == 1 to readsym, it might still return nil to skip some unwanted symbols
+		if(sym.sym == S)
+			continue;
+		sect = obj->sect+sym.shndx;
+		if(sect->sym == nil) {
+			diag("%s: sym#%d: ignoring %s in section %d (type %d)", pn, i, sym.name, sym.shndx, sym.type);
+			continue;
+		}
+		s = sym.sym;
+		if(s->outer != S) {
+			if(s->dupok)
+				continue;
+			diag("%s: duplicate symbol reference: %s in both %s and %s", pn, s->name, s->outer->name, sect->sym->name);
+			errorexit();
+		}
+		s->sub = sect->sym->sub;
+		sect->sym->sub = s;
+		s->type = sect->sym->type | (s->type&~SMASK) | SSUB;
+		if(!(s->cgoexport & CgoExportDynamic))
+			s->dynimplib = nil;  // satisfy dynimport
+		s->value = sym.value;
+		s->size = sym.size;
+		s->outer = sect->sym;
+		if(sect->sym->type == STEXT) {
+			Prog *p;
+
+			if(s->text != P) {
+				if(!s->dupok)
+					diag("%s: duplicate definition of %s", pn, s->name);
+			} else {
+				// build a TEXT instruction with a unique pc
+				// just to make the rest of the linker happy.
+				p = prg();
+				p->as = ATEXT;
+				p->from.type = D_EXTERN;
+				p->from.sym = s;
+				p->textflag = 7;
+				p->to.type = D_CONST;
+				p->link = nil;
+				p->pc = pc++;
+				s->text = p;
+			}
+		}
+	}
+	
+	// Sort outer lists by address, adding to textp.
+	// This keeps textp in increasing address order.
+	for(i=0; i<obj->nsect; i++) {
+		s = obj->sect[i].sym;
+		if(s == S)
+			continue;
+		if(s->sub)
+			s->sub = listsort(s->sub, valuecmp, offsetof(Sym, sub));
 		if(s->type == STEXT) {
 			if(etextp)
 				etextp->next = s;
 			else
 				textp = s;
 			etextp = s;
+			for(s = s->sub; s != S; s = s->sub) {
+				etextp->next = s;
+				etextp = s;
+			}
 		}
-		sect->sym = s;
-	}		
+	}
 
 	// load relocations
 	for(i=0; i<obj->nsect; i++) {
@@ -588,14 +682,24 @@ ldelf(Biobuf *f, char *pkg, int64 len, char *pn)
 					p += 4;
 				}
 			}
-			if(readsym(obj, info>>32, &sym) < 0)
-				goto bad;
-			if(sym.sym == nil) {
-				werrstr("%s#%d: reloc of invalid sym #%d %s shndx=%d type=%d",
-					sect->sym->name, j, (int)(info>>32), sym.name, sym.shndx, sym.type);
-				goto bad;
+			if((info & 0xffffffff) == 0) { // skip R_*_NONE relocation
+				j--;
+				n--;
+				continue;
 			}
-			rp->sym = sym.sym;
+			if((info >> 32) == 0) { // absolute relocation, don't bother reading the null symbol
+				rp->sym = S;
+			} else {
+				if(readsym(obj, info>>32, &sym, 0) < 0)
+					goto bad;
+				sym.sym = symbols[info>>32];
+				if(sym.sym == nil) {
+					werrstr("%s#%d: reloc of invalid sym #%d %s shndx=%d type=%d",
+						sect->sym->name, j, (int)(info>>32), sym.name, sym.shndx, sym.type);
+					goto bad;
+				}
+				rp->sym = sym.sym;
+			}
 			rp->type = reltype(pn, (uint32)info, &rp->siz);
 			if(rela)
 				rp->add = add;
@@ -615,65 +719,13 @@ ldelf(Biobuf *f, char *pkg, int64 len, char *pn)
 		s->r = r;
 		s->nr = n;
 	}
+	free(symbols);
 
-	// enter sub-symbols into symbol table.
-	// symbol 0 is the null symbol.
-	for(i=1; i<obj->nsymtab; i++) {
-		if(readsym(obj, i, &sym) < 0)
-			goto bad;
-		if(sym.type != ElfSymTypeFunc && sym.type != ElfSymTypeObject && sym.type != ElfSymTypeNone)
-			continue;
-		if(sym.shndx == ElfSymShnCommon) {
-			s = sym.sym;
-			if(s->size < sym.size)
-				s->size = sym.size;
-			if(s->type == 0 || s->type == SXREF)
-				s->type = SBSS;
-			continue;
-		}
-		if(sym.shndx >= obj->nsect || sym.shndx == 0)
-			continue;
-		sect = obj->sect+sym.shndx;
-		if(sect->sym == nil) {
-			diag("%s: sym#%d: ignoring %s in section %d (type %d)", pn, i, sym.name, sym.shndx, sym.type);
-			continue;
-		}
-		s = sym.sym;
-		s->sub = sect->sym->sub;
-		sect->sym->sub = s;
-		s->type = sect->sym->type | SSUB;
-		if(!s->dynexport) {
-			s->dynimplib = nil;  // satisfy dynimport
-			s->dynimpname = nil;  // satisfy dynimport
-		}
-		s->value = sym.value;
-		s->size = sym.size;
-		s->outer = sect->sym;
-		if(sect->sym->type == STEXT) {
-			Prog *p;
-
-			if(s->text != P)
-				diag("%s: duplicate definition of %s", pn, s->name);
-			// build a TEXT instruction with a unique pc
-			// just to make the rest of the linker happy.
-			p = prg();
-			p->as = ATEXT;
-			p->from.type = D_EXTERN;
-			p->from.sym = s;
-			p->textflag = 7;
-			p->to.type = D_CONST;
-			p->link = nil;
-			p->pc = pc++;
-			s->text = p;
-
-			etextp->next = s;
-			etextp = s;
-		}
-	}
 	return;
 
 bad:
 	diag("%s: malformed elf file: %r", pn);
+	free(symbols);
 }
 
 static ElfSect*
@@ -707,13 +759,16 @@ map(ElfObj *obj, ElfSect *sect)
 }
 
 static int
-readsym(ElfObj *obj, int i, ElfSym *sym)
+readsym(ElfObj *obj, int i, ElfSym *sym, int needSym)
 {
 	Sym *s;
 
 	if(i >= obj->nsymtab || i < 0) {
 		werrstr("invalid elf symbol index");
 		return -1;
+	}
+	if(i == 0) {
+		diag("readym: read null symbol!");
 	}
 
 	if(obj->is64) {
@@ -743,8 +798,6 @@ readsym(ElfObj *obj, int i, ElfSym *sym)
 	s = nil;
 	if(strcmp(sym->name, "_GLOBAL_OFFSET_TABLE_") == 0)
 		sym->name = ".got";
-	if(strcmp(sym->name, "__stack_chk_fail_local") == 0)
-		sym->other = 0;  // rewrite hidden -> default visibility
 	switch(sym->type) {
 	case ElfSymTypeSection:
 		s = obj->sect[sym->shndx].sym;
@@ -754,13 +807,37 @@ readsym(ElfObj *obj, int i, ElfSym *sym)
 	case ElfSymTypeNone:
 		switch(sym->bind) {
 		case ElfSymBindGlobal:
-			if(sym->other != 2) {
+			if(needSym) {
 				s = lookup(sym->name, 0);
-				break;
+				// for global scoped hidden symbols we should insert it into
+				// symbol hash table, but mark them as hidden.
+				// __i686.get_pc_thunk.bx is allowed to be duplicated, to
+				// workaround that we set dupok.
+				// TODO(minux): correctly handle __i686.get_pc_thunk.bx without
+				// set dupok generally. See http://codereview.appspot.com/5823055/
+				// comment #5 for details.
+				if(s && sym->other == 2) {
+					s->type |= SHIDDEN;
+					s->dupok = 1;
+				}
 			}
-			// fall through
+			break;
 		case ElfSymBindLocal:
-			s = lookup(sym->name, version);
+			if(!(thechar == '5' && (strcmp(sym->name, "$a") == 0 || strcmp(sym->name, "$d") == 0))) // binutils for arm generate these mapping symbols, ignore these
+				if(needSym) {
+					// local names and hidden visiblity global names are unique
+					// and should only reference by its index, not name, so we
+					// don't bother to add them into hash table
+					s = newsym(sym->name, version);
+					s->type |= SHIDDEN;
+				}
+			break;
+		case ElfSymBindWeak:
+			if(needSym) {
+				s = newsym(sym->name, 0);
+				if(sym->other == 2)
+					s->type |= SHIDDEN;
+			}
 			break;
 		default:
 			werrstr("%s: invalid symbol binding %d", sym->name, sym->bind);
@@ -797,6 +874,18 @@ reltype(char *pn, int elftype, uchar *siz)
 	switch(R(thechar, elftype)) {
 	default:
 		diag("%s: unknown relocation type %d; compiled without -fpic?", pn, elftype);
+	case R('5', R_ARM_ABS32):
+	case R('5', R_ARM_GOT32):
+	case R('5', R_ARM_PLT32):
+	case R('5', R_ARM_GOTOFF):
+	case R('5', R_ARM_GOTPC):
+	case R('5', R_ARM_THM_PC22):
+	case R('5', R_ARM_REL32):
+	case R('5', R_ARM_CALL):
+	case R('5', R_ARM_V4BX):
+	case R('5', R_ARM_GOT_PREL):
+	case R('5', R_ARM_PC24):
+	case R('5', R_ARM_JUMP24):
 	case R('6', R_X86_64_PC32):
 	case R('6', R_X86_64_PLT32):
 	case R('6', R_X86_64_GOTPCREL):

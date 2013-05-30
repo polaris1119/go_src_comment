@@ -22,14 +22,72 @@ type SockaddrDatalink struct {
 	Nlen   uint8
 	Alen   uint8
 	Slen   uint8
-	Data   [24]int8
+	Data   [12]int8
 	raw    RawSockaddrDatalink
 }
 
 func Syscall9(trap, a1, a2, a3, a4, a5, a6, a7, a8, a9 uintptr) (r1, r2 uintptr, err Errno)
 
+func sysctlNodes(mib []_C_int) (nodes []Sysctlnode, err error) {
+	var olen uintptr
+
+	// Get a list of all sysctl nodes below the given MIB by performing
+	// a sysctl for the given MIB with CTL_QUERY appended.
+	mib = append(mib, CTL_QUERY)
+	qnode := Sysctlnode{Flags: SYSCTL_VERS_1}
+	qp := (*byte)(unsafe.Pointer(&qnode))
+	sz := unsafe.Sizeof(qnode)
+	if err = sysctl(mib, nil, &olen, qp, sz); err != nil {
+		return nil, err
+	}
+
+	// Now that we know the size, get the actual nodes.
+	nodes = make([]Sysctlnode, olen/sz)
+	np := (*byte)(unsafe.Pointer(&nodes[0]))
+	if err = sysctl(mib, np, &olen, qp, sz); err != nil {
+		return nil, err
+	}
+
+	return nodes, nil
+}
+
 func nametomib(name string) (mib []_C_int, err error) {
-	return nil, EINVAL
+
+	// Split name into components.
+	var parts []string
+	last := 0
+	for i := 0; i < len(name); i++ {
+		if name[i] == '.' {
+			parts = append(parts, name[last:i])
+			last = i + 1
+		}
+	}
+	parts = append(parts, name[last:])
+
+	// Discover the nodes and construct the MIB OID.
+	for partno, part := range parts {
+		nodes, err := sysctlNodes(mib)
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range nodes {
+			n := make([]byte, 0)
+			for i := range node.Name {
+				if node.Name[i] != 0 {
+					n = append(n, byte(node.Name[i]))
+				}
+			}
+			if string(n) == part {
+				mib = append(mib, _C_int(node.Num))
+				break
+			}
+		}
+		if len(mib) != partno+1 {
+			return nil, EINVAL
+		}
+	}
+
+	return mib, nil
 }
 
 // ParseDirent parses up to max directory entries in buf,
@@ -60,15 +118,12 @@ func ParseDirent(buf []byte, max int, names []string) (consumed int, count int, 
 	return origlen - len(buf), count, names
 }
 
-//sysnb pipe2(p *[2]_C_int, flags _C_int) (err error)
+//sysnb pipe() (fd1 int, fd2 int, err error)
 func Pipe(p []int) (err error) {
 	if len(p) != 2 {
 		return EINVAL
 	}
-	var pp [2]_C_int
-	err = pipe2(&pp, 0)
-	p[0] = int(pp[0])
-	p[1] = int(pp[1])
+	p[0], p[1], err = pipe()
 	return
 }
 
@@ -78,7 +133,7 @@ func Getdirentries(fd int, buf []byte, basep *uintptr) (n int, err error) {
 }
 
 // TODO
-func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
+func sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
 	return -1, ENOSYS
 }
 
@@ -97,7 +152,7 @@ func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err e
 //sysnb	Dup2(from int, to int) (err error)
 //sys	Exit(code int)
 //sys	Fchdir(fd int) (err error)
-//sys	Fchflags(path string, flags int) (err error)
+//sys	Fchflags(fd int, flags int) (err error)
 //sys	Fchmod(fd int, mode uint32) (err error)
 //sys	Fchown(fd int, uid int, gid int) (err error)
 //sys	Flock(fd int, how int) (err error)
@@ -133,7 +188,7 @@ func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err e
 //sys	Pathconf(path string, name int) (val int, err error)
 //sys	Pread(fd int, p []byte, offset int64) (n int, err error)
 //sys	Pwrite(fd int, p []byte, offset int64) (n int, err error)
-//sys	Read(fd int, p []byte) (n int, err error)
+//sys	read(fd int, p []byte) (n int, err error)
 //sys	Readlink(path string, buf []byte) (n int, err error)
 //sys	Rename(from string, to string) (err error)
 //sys	Revoke(path string) (err error)
@@ -158,11 +213,11 @@ func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err e
 //sys	Umask(newmask int) (oldmask int)
 //sys	Unlink(path string) (err error)
 //sys	Unmount(path string, flags int) (err error)
-//sys	Write(fd int, p []byte) (n int, err error)
+//sys	write(fd int, p []byte) (n int, err error)
 //sys	mmap(addr uintptr, length uintptr, prot int, flag int, fd int, pos int64) (ret uintptr, err error)
 //sys	munmap(addr uintptr, length uintptr) (err error)
-//sys	read(fd int, buf *byte, nbuf int) (n int, err error)
-//sys	write(fd int, buf *byte, nbuf int) (n int, err error)
+//sys	readlen(fd int, buf *byte, nbuf int) (n int, err error) = SYS_READ
+//sys	writelen(fd int, buf *byte, nbuf int) (n int, err error) = SYS_WRITE
 
 /*
  * Unimplemented

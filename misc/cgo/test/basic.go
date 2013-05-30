@@ -14,15 +14,16 @@ package cgotest
 
 #define SHIFT(x, y)  ((x)<<(y))
 #define KILO SHIFT(1, 10)
+#define UINT32VAL 0xc008427bU
 
 enum E {
 	Enum1 = 1,
 	Enum2 = 2,
 };
 
-typedef unsigned char uuid_t[20];
+typedef unsigned char cgo_uuid_t[20];
 
-void uuid_generate(uuid_t x) {
+void uuid_generate(cgo_uuid_t x) {
 	x[0] = 0;
 }
 
@@ -55,6 +56,7 @@ int add(int x, int y) {
 */
 import "C"
 import (
+	"runtime"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -65,7 +67,7 @@ const EINVAL = C.EINVAL /* test #define */
 var KILO = C.KILO
 
 func uuidgen() {
-	var uuid C.uuid_t
+	var uuid C.cgo_uuid_t
 	C.uuid_generate(&uuid[0])
 }
 
@@ -118,7 +120,12 @@ func testErrno(t *testing.T) {
 func testMultipleAssign(t *testing.T) {
 	p := C.CString("234")
 	n, m := C.strtol(p, nil, 345), C.strtol(p, nil, 10)
-	if n != 0 || m != 234 {
+	if runtime.GOOS == "openbsd" {
+		// Bug in OpenBSD strtol(3) - base > 36 succeeds.
+		if (n != 0 && n != 239089) || m != 234 {
+			t.Fatal("Strtol x2: ", n, m)
+		}
+	} else if n != 0 || m != 234 {
 		t.Fatal("Strtol x2: ", n, m)
 	}
 	C.free(unsafe.Pointer(p))
@@ -139,5 +146,14 @@ func benchCgoCall(b *testing.B) {
 	const y = C.int(3)
 	for i := 0; i < b.N; i++ {
 		C.add(x, y)
+	}
+}
+
+// Issue 2470.
+func testUnsignedInt(t *testing.T) {
+	a := (int64)(C.UINT32VAL)
+	b := (int64)(0xc008427b)
+	if a != b {
+		t.Errorf("Incorrect unsigned int - got %x, want %x", a, b)
 	}
 }

@@ -300,6 +300,7 @@ enum
 	OPOSTINC,
 	OPREDEC,
 	OPREINC,
+	OPREFETCH,
 	OPROTO,
 	OREGISTER,
 	ORETURN,
@@ -324,6 +325,7 @@ enum
 	OINDEX,
 	OFAS,
 	OREGPAIR,
+	OROTL,
 
 	OEND
 };
@@ -442,25 +444,6 @@ struct	Funct
 	Sym*	castfr[NTYPE];
 };
 
-struct	Dynimp
-{
-	char*	local;
-	char*	remote;
-	char*	path;
-};
-
-EXTERN	Dynimp	*dynimp;
-EXTERN	int	ndynimp;
-
-struct	Dynexp
-{
-	char*	local;
-	char*	remote;
-};
-
-EXTERN	Dynexp	*dynexp;
-EXTERN	int	ndynexp;
-
 EXTERN struct
 {
 	Type*	tenum;		/* type of entire enum */
@@ -473,7 +456,7 @@ EXTERN	int	autobn;
 EXTERN	int32	autoffset;
 EXTERN	int	blockno;
 EXTERN	Decl*	dclstack;
-EXTERN	char	debug[256];
+EXTERN	int	debug[256];
 EXTERN	Hist*	ehist;
 EXTERN	int32	firstbit;
 EXTERN	Sym*	firstarg;
@@ -526,10 +509,12 @@ EXTERN	int	packflg;
 EXTERN	int	fproundflg;
 EXTERN	int	textflag;
 EXTERN	int	dataflag;
+EXTERN	int	flag_largemodel;
 EXTERN	int	ncontin;
 EXTERN	int	canreach;
 EXTERN	int	warnreach;
 EXTERN	Bits	zbits;
+EXTERN	Fmt	pragcgobuf;
 
 extern	char	*onames[], *tnames[], *gnames[];
 extern	char	*cnames[], *qnames[], *bnames[];
@@ -771,8 +756,7 @@ void	pragfpround(void);
 void	pragdataflag(void);
 void	pragtextflag(void);
 void	pragincomplete(void);
-void	pragdynimport(void);
-void	pragdynexport(void);
+void	pragcgo(char*);
 
 /*
  * calls to machine depend part
@@ -816,6 +800,7 @@ int	machcap(Node*);
 #pragma	varargck	type	"Q"	int32
 #pragma	varargck	type	"O"	int
 #pragma	varargck	type	"O"	uint
+#pragma	varargck	type	"S"	ushort*
 #pragma	varargck	type	"T"	Type*
 #pragma	varargck	type	"U"	char*
 #pragma	varargck	type	"|"	int

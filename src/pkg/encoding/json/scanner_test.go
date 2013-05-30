@@ -92,7 +92,7 @@ func TestCompactBig(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 	b := buf.Bytes()
-	if bytes.Compare(b, jsonBig) != 0 {
+	if !bytes.Equal(b, jsonBig) {
 		t.Error("Compact(jsonBig) != jsonBig")
 		diff(t, b, jsonBig)
 		return
@@ -118,7 +118,7 @@ func TestIndentBig(t *testing.T) {
 		t.Fatalf("Indent2: %v", err)
 	}
 	b1 := buf1.Bytes()
-	if bytes.Compare(b1, b) != 0 {
+	if !bytes.Equal(b1, b) {
 		t.Error("Indent(Indent(jsonBig)) != Indent(jsonBig)")
 		diff(t, b1, b)
 		return
@@ -130,7 +130,7 @@ func TestIndentBig(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 	b1 = buf1.Bytes()
-	if bytes.Compare(b1, jsonBig) != 0 {
+	if !bytes.Equal(b1, jsonBig) {
 		t.Error("Compact(Indent(jsonBig)) != jsonBig")
 		diff(t, b1, jsonBig)
 		return
@@ -276,9 +276,6 @@ func genArray(n int) []interface{} {
 	f := int(math.Abs(rand.NormFloat64()) * math.Min(10, float64(n/2)))
 	if f > n {
 		f = n
-	}
-	if n > 0 && f == 0 {
-		f = 1
 	}
 	x := make([]interface{}, f)
 	for i := range x {

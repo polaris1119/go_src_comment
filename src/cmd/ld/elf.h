@@ -251,6 +251,7 @@ typedef struct {
 #define PT_LOPROC	0x70000000	/* First processor-specific type. */
 #define PT_HIPROC	0x7fffffff	/* Last processor-specific type. */
 #define PT_GNU_STACK	0x6474e551
+#define PT_PAX_FLAGS	0x65041580
 
 /* Values for p_flags. */
 #define PF_X		0x1		/* Executable. */
@@ -562,6 +563,10 @@ typedef struct {
 #define	R_ARM_GOTPC		25	/* Add PC-relative GOT table address. */
 #define	R_ARM_GOT32		26	/* Add PC-relative GOT offset. */
 #define	R_ARM_PLT32		27	/* Add PC-relative PLT offset. */
+#define	R_ARM_CALL		28
+#define	R_ARM_JUMP24	29
+#define	R_ARM_V4BX		40
+#define	R_ARM_GOT_PREL		96
 #define	R_ARM_GNU_VTENTRY	100
 #define	R_ARM_GNU_VTINHERIT	101
 #define	R_ARM_RSBREL32		250
@@ -571,7 +576,7 @@ typedef struct {
 #define	R_ARM_RPC24		254
 #define	R_ARM_RBASE		255
 
-#define	R_ARM_COUNT		33	/* Count of defined relocation types. */
+#define	R_ARM_COUNT		37	/* Count of defined relocation types. */
 
 
 #define	R_386_NONE	0	/* No relocation. */
@@ -836,7 +841,8 @@ typedef struct {
  * Section header.
  */
 
-typedef struct {
+typedef struct Elf64_Shdr Elf64_Shdr;
+struct Elf64_Shdr {
 	Elf64_Word	name;	/* Section name (index into the
 					   section header string table). */
 	Elf64_Word	type;	/* Section type. */
@@ -848,7 +854,10 @@ typedef struct {
 	Elf64_Word	info;	/* Depends on section type. */
 	Elf64_Xword	addralign;	/* Alignment in bytes. */
 	Elf64_Xword	entsize;	/* Size of each entry in section. */
-} Elf64_Shdr;
+	
+	int	shnum;  /* section number, not stored on disk */
+	Sym*	secsym; /* section symbol, if needed; not on disk */
+};
 
 /*
  * Program header.
@@ -952,7 +961,6 @@ typedef Elf64_Phdr ElfPhdr;
 
 void	elfinit(void);
 ElfEhdr	*getElfEhdr(void);
-ElfShdr	*newElfShstrtab(vlong);
 ElfShdr	*newElfShdr(vlong);
 ElfPhdr	*newElfPhdr(void);
 uint32	elfwritehdr(void);
@@ -969,18 +977,42 @@ extern	int	numelfshdr;
 extern	int	iself;
 extern	int	elfverneed;
 int	elfinterp(ElfShdr*, uint64, uint64, char*);
-int	elfwriteinterp(vlong);
+int	elfwriteinterp(void);
 int	elfnetbsdsig(ElfShdr*, uint64, uint64);
-int	elfwritenetbsdsig(vlong);
+int	elfwritenetbsdsig(void);
+int	elfopenbsdsig(ElfShdr*, uint64, uint64);
+int	elfwriteopenbsdsig(void);
+void	addbuildinfo(char*);
+int	elfbuildinfo(ElfShdr*, uint64, uint64);
+int	elfwritebuildinfo(void);
 void	elfdynhash(void);
 ElfPhdr* elfphload(Segment*);
 ElfShdr* elfshbits(Section*);
+ElfShdr* elfshalloc(Section*);
+ElfShdr* elfshname(char*);
+ElfShdr* elfshreloc(Section*);
 void	elfsetstring(char*, int);
 void	elfaddverneed(Sym*);
+void	elfemitreloc(void);
+void	shsym(ElfShdr*, Sym*);
+void	phsh(ElfPhdr*, ElfShdr*);
+void	doelf(void);
+void	elfsetupplt(void);
+void	dwarfaddshstrings(Sym*);
+void	dwarfaddelfsectionsyms(void);
+void	dwarfaddelfheaders(void);
+void	asmbelf(vlong symo);
+void	asmbelfsetup(void);
+extern char linuxdynld[];
+extern char freebsddynld[];
+extern char netbsddynld[];
+extern char openbsddynld[];
+int	elfreloc1(Reloc*, vlong sectoff);
+void	putelfsectionsyms(void);
 
 EXTERN	int	elfstrsize;
 EXTERN	char*	elfstrdat;
-EXTERN	int	elftextsh;
+EXTERN	int	buildinfolen;
 
 /*
  * Total amount of space to reserve at the start of the file

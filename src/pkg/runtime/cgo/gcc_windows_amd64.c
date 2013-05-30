@@ -4,31 +4,31 @@
 
 #define WIN64_LEAN_AND_MEAN
 #include <windows.h>
+#include <process.h>
 #include "libcgo.h"
 
-static void *threadentry(void*);
+static void threadentry(void*);
 
 /* 2MB is default stack size for 64-bit Windows.
    Allocation granularity on Windows is typically 64 KB.
    The constant is also hardcoded in cmd/ld/pe.c (keep synchronized). */
 #define STACKSIZE (2*1024*1024)
 
-static void
-xinitcgo(G *g)
+void
+x_cgo_init(G *g)
 {
 	int tmp;
 	g->stackguard = (uintptr)&tmp - STACKSIZE + 8*1024;
 }
 
-void (*initcgo)(G*) = xinitcgo;
 
 void
-libcgo_sys_thread_start(ThreadStart *ts)
+_cgo_sys_thread_start(ThreadStart *ts)
 {
 	_beginthread(threadentry, 0, ts);
 }
 
-static void*
+static void
 threadentry(void *v)
 {
 	ThreadStart ts;
@@ -53,5 +53,4 @@ threadentry(void *v)
 	);
 
 	crosscall_amd64(ts.fn);
-	return nil;
 }

@@ -4,9 +4,14 @@
 
 // +build darwin freebsd linux netbsd openbsd windows
 
+// Internet protocol family sockets for POSIX
+
 package net
 
-import "syscall"
+import (
+	"syscall"
+	"time"
+)
 
 // Should we try to use the IPv4 socket interface if we're
 // only dealing with IPv4 sockets?  As long as the host system
@@ -97,9 +102,12 @@ func favoriteAddrFamily(net string, laddr, raddr sockaddr, mode string) (family 
 		return syscall.AF_INET6, true
 	}
 
-	if mode == "listen" && laddr.isWildcard() {
+	if mode == "listen" && (laddr == nil || laddr.isWildcard()) {
 		if supportsIPv4map {
 			return syscall.AF_INET6, false
+		}
+		if laddr == nil {
+			return syscall.AF_INET, false
 		}
 		return laddr.family(), false
 	}
@@ -122,7 +130,7 @@ type sockaddr interface {
 	sockaddr(family int) (syscall.Sockaddr, error)
 }
 
-func internetSocket(net string, laddr, raddr sockaddr, sotype, proto int, mode string, toAddr func(syscall.Sockaddr) Addr) (fd *netFD, err error) {
+func internetSocket(net string, laddr, raddr sockaddr, deadline time.Time, sotype, proto int, mode string, toAddr func(syscall.Sockaddr) Addr) (fd *netFD, err error) {
 	var la, ra syscall.Sockaddr
 	family, ipv6only := favoriteAddrFamily(net, laddr, raddr, mode)
 	if laddr != nil {
@@ -135,7 +143,7 @@ func internetSocket(net string, laddr, raddr sockaddr, sotype, proto int, mode s
 			goto Error
 		}
 	}
-	fd, err = socket(net, family, sotype, proto, ipv6only, la, ra, toAddr)
+	fd, err = socket(net, family, sotype, proto, ipv6only, la, ra, deadline, toAddr)
 	if err != nil {
 		goto Error
 	}
@@ -149,7 +157,7 @@ Error:
 	return nil, &OpError{mode, net, addr, err}
 }
 
-func ipToSockaddr(family int, ip IP, port int) (syscall.Sockaddr, error) {
+func ipToSockaddr(family int, ip IP, port int, zone string) (syscall.Sockaddr, error) {
 	switch family {
 	case syscall.AF_INET:
 		if len(ip) == 0 {
@@ -158,12 +166,12 @@ func ipToSockaddr(family int, ip IP, port int) (syscall.Sockaddr, error) {
 		if ip = ip.To4(); ip == nil {
 			return nil, InvalidAddrError("non-IPv4 address")
 		}
-		s := new(syscall.SockaddrInet4)
+		sa := new(syscall.SockaddrInet4)
 		for i := 0; i < IPv4len; i++ {
-			s.Addr[i] = ip[i]
+			sa.Addr[i] = ip[i]
 		}
-		s.Port = port
-		return s, nil
+		sa.Port = port
+		return sa, nil
 	case syscall.AF_INET6:
 		if len(ip) == 0 {
 			ip = IPv6zero
@@ -177,12 +185,13 @@ func ipToSockaddr(family int, ip IP, port int) (syscall.Sockaddr, error) {
 		if ip = ip.To16(); ip == nil {
 			return nil, InvalidAddrError("non-IPv6 address")
 		}
-		s := new(syscall.SockaddrInet6)
+		sa := new(syscall.SockaddrInet6)
 		for i := 0; i < IPv6len; i++ {
-			s.Addr[i] = ip[i]
+			sa.Addr[i] = ip[i]
 		}
-		s.Port = port
-		return s, nil
+		sa.Port = port
+		sa.ZoneId = uint32(zoneToInt(zone))
+		return sa, nil
 	}
 	return nil, InvalidAddrError("unexpected socket family")
 }

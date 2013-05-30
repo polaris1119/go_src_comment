@@ -12,8 +12,10 @@
 //   void crosscall2(void (*fn)(void *, int), void *, int);
 // 
 // We need to export the symbol crosscall2 in order to support
-// callbacks from shared libraries.
-#pragma dynexport crosscall2 crosscall2
+// callbacks from shared libraries. This applies regardless of
+// linking mode.
+#pragma cgo_export_static crosscall2
+#pragma cgo_export_dynamic crosscall2
 
 // Allocate memory.  This allocates the requested number of bytes in
 // memory controlled by the Go runtime.  The allocated memory will be
@@ -33,11 +35,18 @@
 static void
 _cgo_allocate_internal(uintptr len, byte *ret)
 {
+	CgoMal *c;
+
 	ret = runtime·mal(len);
+	c = runtime·mal(sizeof(*c));
+	c->next = m->cgomal;
+	c->alloc = ret;
+	m->cgomal = c;
 	FLUSH(&ret);
 }
 
-#pragma dynexport _cgo_allocate _cgo_allocate
+#pragma cgo_export_static _cgo_allocate
+#pragma cgo_export_dynamic _cgo_allocate
 void
 _cgo_allocate(void *a, int32 n)
 {
@@ -65,9 +74,26 @@ _cgo_panic_internal(byte *p)
 	runtime·panic(err);
 }
 
-#pragma dynexport _cgo_panic _cgo_panic
+#pragma cgo_export_static _cgo_panic
+#pragma cgo_export_dynamic _cgo_panic
 void
 _cgo_panic(void *a, int32 n)
 {
 	runtime·cgocallback((void(*)(void))_cgo_panic_internal, a, n);
 }
+
+#pragma cgo_import_static x_cgo_init
+extern void x_cgo_init(G*);
+void (*_cgo_init)(G*) = x_cgo_init;
+
+#pragma cgo_import_static x_cgo_malloc
+extern void x_cgo_malloc(void*);
+void (*_cgo_malloc)(void*) = x_cgo_malloc;
+
+#pragma cgo_import_static x_cgo_free
+extern void x_cgo_free(void*);
+void (*_cgo_free)(void*) = x_cgo_free;
+
+#pragma cgo_import_static x_cgo_thread_start
+extern void x_cgo_thread_start(void*);
+void (*_cgo_thread_start)(void*) = x_cgo_thread_start;

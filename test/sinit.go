@@ -1,5 +1,8 @@
 // $G -S $D/$F.go | egrep initdone >/dev/null && echo BUG sinit || true
 
+// NOTE: This test is not run by 'run.go' and so not run by all.bash.
+// To run this test you must use the ./run shell script.
+
 // Copyright 2010 The Go Authors.  All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -256,3 +259,13 @@ var copy_pt0a = pt0a
 var copy_pt0b = pt0b
 var copy_pt1 = pt1
 var copy_pt1a = pt1a
+
+var _ interface{} = 1
+
+type T1 int
+
+func (t *T1) M() {}
+
+type Mer interface { M() }
+
+var _ Mer = (*T1)(nil)

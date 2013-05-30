@@ -30,6 +30,28 @@ TEXT runtime·exit1(SB),7,$0
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
+TEXT runtime·open(SB),7,$0
+	MOVQ	8(SP), DI		// arg 1 pathname
+	MOVL	16(SP), SI		// arg 2 flags
+	MOVL	20(SP), DX		// arg 3 mode
+	MOVL	$(0x2000000+5), AX	// syscall entry
+	SYSCALL
+	RET
+
+TEXT runtime·close(SB),7,$0
+	MOVL	8(SP), DI		// arg 1 fd
+	MOVL	$(0x2000000+6), AX	// syscall entry
+	SYSCALL
+	RET
+
+TEXT runtime·read(SB),7,$0
+	MOVL	8(SP), DI		// arg 1 fd
+	MOVQ	16(SP), SI		// arg 2 buf
+	MOVL	24(SP), DX		// arg 3 count
+	MOVL	$(0x2000000+3), AX	// syscall entry
+	SYSCALL
+	RET
+
 TEXT runtime·write(SB),7,$0
 	MOVL	8(SP), DI		// arg 1 fd
 	MOVQ	16(SP), SI		// arg 2 buf
@@ -38,12 +60,13 @@ TEXT runtime·write(SB),7,$0
 	SYSCALL
 	RET
 
-TEXT runtime·raisesigpipe(SB),7,$24
-	get_tls(CX)
-	MOVQ	m(CX), DX
-	MOVL	$13, DI	// arg 1 SIGPIPE
-	MOVQ	m_procid(DX), SI	// arg 2 thread_port
-	MOVL	$(0x2000000+328), AX	// syscall entry __pthread_kill
+TEXT runtime·raise(SB),7,$24
+	MOVL	$(0x2000000+20), AX // getpid
+	SYSCALL
+	MOVQ	AX, DI	// arg 1 - pid
+	MOVL	sig+0(FP), SI	// arg 2 - signal
+	MOVL	$1, DX	// arg 3 - posix
+	MOVL	$(0x2000000+37), AX // kill
 	SYSCALL
 	RET
 
@@ -61,35 +84,87 @@ TEXT runtime·madvise(SB), 7, $0
 	MOVL	24(SP), DX		// arg 3 advice
 	MOVL	$(0x2000000+75), AX	// syscall entry madvise
 	SYSCALL
-	JCC	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	// ignore failure - maybe pages are locked
 	RET
 
-// func now() (sec int64, nsec int32)
-TEXT time·now(SB), 7, $32
-	MOVQ	SP, DI	// must be non-nil, unused
-	MOVQ	$0, SI
-	MOVL	$(0x2000000+116), AX
-	SYSCALL
-
-	// sec is in AX, usec in DX
-	MOVQ	AX, sec+0(FP)
-	IMULQ	$1000, DX
-	MOVL	DX, nsec+8(FP)
-	RET
+// OS X comm page time offsets
+// http://www.opensource.apple.com/source/xnu/xnu-1699.26.8/osfmk/i386/cpu_capabilities.h
+#define	nt_tsc_base	0x50
+#define	nt_scale	0x58
+#define	nt_shift	0x5c
+#define	nt_ns_base	0x60
+#define	nt_generation	0x68
+#define	gtod_generation	0x6c
+#define	gtod_ns_base	0x70
+#define	gtod_sec_base	0x78
 
 // int64 nanotime(void)
 TEXT runtime·nanotime(SB), 7, $32
+	MOVQ	$0x7fffffe00000, BP	/* comm page base */
+	// Loop trying to take a consistent snapshot
+	// of the time parameters.
+timeloop:
+	MOVL	gtod_generation(BP), R8
+	TESTL	R8, R8
+	JZ	systime
+	MOVL	nt_generation(BP), R9
+	TESTL	R9, R9
+	JZ	timeloop
+	RDTSC
+	MOVQ	nt_tsc_base(BP), R10
+	MOVL	nt_scale(BP), R11
+	MOVQ	nt_ns_base(BP), R12
+	CMPL	nt_generation(BP), R9
+	JNE	timeloop
+	MOVQ	gtod_ns_base(BP), R13
+	MOVQ	gtod_sec_base(BP), R14
+	CMPL	gtod_generation(BP), R8
+	JNE	timeloop
+
+	// Gathered all the data we need. Compute time.
+	//	((tsc - nt_tsc_base) * nt_scale) >> 32 + nt_ns_base - gtod_ns_base + gtod_sec_base*1e9
+	// The multiply and shift extracts the top 64 bits of the 96-bit product.
+	SHLQ	$32, DX
+	ADDQ	DX, AX
+	SUBQ	R10, AX
+	MULQ	R11
+	SHRQ	$32, AX:DX
+	ADDQ	R12, AX
+	SUBQ	R13, AX
+	IMULQ	$1000000000, R14
+	ADDQ	R14, AX
+	RET
+
+systime:
+	// Fall back to system call (usually first call in this thread).
 	MOVQ	SP, DI	// must be non-nil, unused
 	MOVQ	$0, SI
 	MOVL	$(0x2000000+116), AX
 	SYSCALL
-
 	// sec is in AX, usec in DX
 	// return nsec in AX
 	IMULQ	$1000000000, AX
 	IMULQ	$1000, DX
 	ADDQ	DX, AX
+	RET
+
+// func now() (sec int64, nsec int32)
+TEXT time·now(SB),7,$0
+	CALL	runtime·nanotime(SB)
+
+	// generated code for
+	//	func f(x uint64) (uint64, uint64) { return x/1000000000, x%100000000 }
+	// adapted to reduce duplication
+	MOVQ	AX, CX
+	MOVQ	$1360296554856532783, AX
+	MULQ	CX
+	ADDQ	CX, DX
+	RCRQ	$1, DX
+	SHRQ	$29, DX
+	MOVQ	DX, sec+0(FP)
+	IMULQ	$1000000000, DX
+	SUBQ	DX, CX
+	MOVL	CX, nsec+8(FP)
 	RET
 
 TEXT runtime·sigprocmask(SB),7,$0
@@ -120,8 +195,10 @@ TEXT runtime·sigtramp(SB),7,$64
 	// check that m exists
 	MOVQ	m(BX), BP
 	CMPQ	BP, $0
-	JNE	2(PC)
+	JNE	4(PC)
+	MOVL	DX, 0(SP)
 	CALL	runtime·badsignal(SB)
+	RET
 
 	// save g
 	MOVQ	g(BX), R10
@@ -199,7 +276,7 @@ TEXT runtime·usleep(SB),7,$16
 	SYSCALL
 	RET
 
-// void bsdthread_create(void *stk, M *m, G *g, void (*fn)(void))
+// void bsdthread_create(void *stk, M *mp, G *gp, void (*fn)(void))
 TEXT runtime·bsdthread_create(SB),7,$0
 	// Set up arguments to bsdthread_create system call.
 	// The ones in quotes pass through to the thread callback
@@ -213,7 +290,7 @@ TEXT runtime·bsdthread_create(SB),7,$0
 	MOVQ	$(0x2000000+360), AX	// bsdthread_create
 	SYSCALL
 	JCC 3(PC)
-	NEGL	AX
+	NEGQ	AX
 	RET
 	MOVL	$0, AX
 	RET
@@ -265,8 +342,10 @@ TEXT runtime·bsdthread_register(SB),7,$0
 	MOVQ	$0, R9	// dispatchqueue_offset
 	MOVQ	$(0x2000000+366), AX	// bsdthread_register
 	SYSCALL
-	JCC 2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	JCC 3(PC)
+	NEGQ	AX
+	RET
+	MOVL	$0, AX
 	RET
 
 // Mach system calls use 0x1000000 instead of the BSD's 0x2000000.
@@ -357,7 +436,41 @@ TEXT runtime·sysctl(SB),7,$0
 	MOVL	$(0x2000000+202), AX	// syscall entry
 	SYSCALL
 	JCC 3(PC)
-	NEGL	AX
+	NEGQ	AX
 	RET
 	MOVL	$0, AX
+	RET
+
+// int32 runtime·kqueue(void);
+TEXT runtime·kqueue(SB),7,$0
+	MOVQ    $0, DI
+	MOVQ    $0, SI
+	MOVQ    $0, DX
+	MOVL	$(0x2000000+362), AX
+	SYSCALL
+	JCC	2(PC)
+	NEGQ	AX
+	RET
+
+// int32 runtime·kevent(int kq, Kevent *changelist, int nchanges, Kevent *eventlist, int nevents, Timespec *timeout);
+TEXT runtime·kevent(SB),7,$0
+	MOVL    8(SP), DI
+	MOVQ    16(SP), SI
+	MOVL    24(SP), DX
+	MOVQ    32(SP), R10
+	MOVL    40(SP), R8
+	MOVQ    48(SP), R9
+	MOVL	$(0x2000000+363), AX
+	SYSCALL
+	JCC	2(PC)
+	NEGQ	AX
+	RET
+
+// void runtime·closeonexec(int32 fd);
+TEXT runtime·closeonexec(SB),7,$0
+	MOVL    8(SP), DI  // fd
+	MOVQ    $2, SI  // F_SETFD
+	MOVQ    $1, DX  // FD_CLOEXEC
+	MOVL	$(0x2000000+92), AX  // fcntl
+	SYSCALL
 	RET

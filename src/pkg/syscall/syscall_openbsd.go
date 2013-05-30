@@ -91,7 +91,7 @@ func Pipe(p []int) (err error) {
 }
 
 // TODO
-func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
+func sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
 	return -1, ENOSYS
 }
 
@@ -110,7 +110,7 @@ func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err e
 //sysnb	Dup2(from int, to int) (err error)
 //sys	Exit(code int)
 //sys	Fchdir(fd int) (err error)
-//sys	Fchflags(path string, flags int) (err error)
+//sys	Fchflags(fd int, flags int) (err error)
 //sys	Fchmod(fd int, mode uint32) (err error)
 //sys	Fchown(fd int, uid int, gid int) (err error)
 //sys	Flock(fd int, how int) (err error)
@@ -149,7 +149,7 @@ func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err e
 //sys	Pathconf(path string, name int) (val int, err error)
 //sys	Pread(fd int, p []byte, offset int64) (n int, err error)
 //sys	Pwrite(fd int, p []byte, offset int64) (n int, err error)
-//sys	Read(fd int, p []byte) (n int, err error)
+//sys	read(fd int, p []byte) (n int, err error)
 //sys	Readlink(path string, buf []byte) (n int, err error)
 //sys	Rename(from string, to string) (err error)
 //sys	Revoke(path string) (err error)
@@ -176,11 +176,11 @@ func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err e
 //sys	Umask(newmask int) (oldmask int)
 //sys	Unlink(path string) (err error)
 //sys	Unmount(path string, flags int) (err error)
-//sys	Write(fd int, p []byte) (n int, err error)
+//sys	write(fd int, p []byte) (n int, err error)
 //sys	mmap(addr uintptr, length uintptr, prot int, flag int, fd int, pos int64) (ret uintptr, err error)
 //sys	munmap(addr uintptr, length uintptr) (err error)
-//sys	read(fd int, buf *byte, nbuf int) (n int, err error)
-//sys	write(fd int, buf *byte, nbuf int) (n int, err error)
+//sys	readlen(fd int, buf *byte, nbuf int) (n int, err error) = SYS_READ
+//sys	writelen(fd int, buf *byte, nbuf int) (n int, err error) = SYS_WRITE
 
 /*
  * Unimplemented

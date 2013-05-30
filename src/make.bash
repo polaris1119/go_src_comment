@@ -23,9 +23,20 @@
 # GO_LDFLAGS: Additional 5l/6l/8l arguments to use when
 # building the commands.
 #
+# GO_CCFLAGS: Additional 5c/6c/8c arguments to use when
+# building.
+#
 # CGO_ENABLED: Controls cgo usage during the build. Set it to 1
 # to include all cgo related files, .c and .go file with "cgo"
 # build directive, in the build. Set it to 0 to ignore them.
+#
+# GO_EXTLINK_ENABLED: Set to 1 to invoke the host linker when building
+# packages that use cgo.  Set to 0 to do all linking internally.  This
+# controls the default behavior of the linker's -linkmode option.  The
+# default value depends on the system.
+#
+# CC: Command line to run to get at host C compiler.
+# Default is "gcc". Also supported: "clang".
 
 set -e
 if [ ! -f run.bash ]; then
@@ -77,6 +88,13 @@ do
 	fi
 done
 
+# Test for debian/kFreeBSD.
+# cmd/dist will detect kFreeBSD as freebsd/$GOARCH, but we need to
+# disable cgo manually.
+if [ "$(uname -s)" == "GNU/kFreeBSD" ]; then
+        export CGO_ENABLED=0
+fi
+
 # Clean old generated file that will cause problems in the build.
 rm -f ./pkg/runtime/runtime_defs.go
 
@@ -96,17 +114,21 @@ case "$GOHOSTARCH" in
 386) mflag=-m32;;
 amd64) mflag=-m64;;
 esac
+if [ "$(uname)" == "Darwin" ]; then
+	# golang.org/issue/5261
+	mflag="$mflag -mmacosx-version-min=10.6"
+fi
 
 # gcc编译：编译cmd/dist下所有的c文件
-# -m：指定处理器架构，以便进行优化（-m32、-m64）或为空（一般为空）
-# -O：优化选项，一般为：-O2。优化得到的程序比没优化的要小，执行速度可能也有所提高
-# -Wall：生成所有警告信息
-# -Werror：所有警告信息都变成错误
-# -ggdb：为gdb生成调试信息（-g是生成调试信息）
-# -o：生成指定的输出文件
-# -I：指定额外的文件搜索路径
-# -D：相当于C语言中的#define GOROOT_FINAL="$GOROOT_FINAL"
-gcc $mflag -O2 -Wall -Werror -ggdb -o cmd/dist/dist -Icmd/dist "$DEFGOROOT" cmd/dist/*.c
+#	-m：指定处理器架构，以便进行优化（-m32、-m64）或为空（一般为空）
+#	-O：优化选项，一般为：-O2。优化得到的程序比没优化的要小，执行速度可能也有所提高
+#	-Wall：生成所有警告信息
+#	-Werror：所有警告信息都变成错误
+#	-ggdb：为gdb生成调试信息（-g是生成调试信息）
+#	-o：生成指定的输出文件
+#	-I：指定额外的文件搜索路径
+#	-D：相当于C语言中的#define GOROOT_FINAL="$GOROOT_FINAL"
+${CC:-gcc} $mflag -O2 -Wall -Werror -o cmd/dist/dist -Icmd/dist "$DEFGOROOT" cmd/dist/*.c
 
 # 编译完 dist 工具后，运行dist。目的是设置相关环境变量
 # 比如：$GOTOOLDIR 环境变量就是这里设置的
@@ -148,12 +170,12 @@ if [ "$GOHOSTARCH" != "$GOARCH" -o "$GOHOSTOS" != "$GOOS" ]; then
 	# 即使交叉编译，本机的Go环境还是必须得有
 	echo "# Building packages and commands for host, $GOHOSTOS/$GOHOSTARCH."
 	GOOS=$GOHOSTOS GOARCH=$GOHOSTARCH \
-		"$GOTOOLDIR"/go_bootstrap install -gcflags "$GO_GCFLAGS" -ldflags "$GO_LDFLAGS" -v std
+		"$GOTOOLDIR"/go_bootstrap install -ccflags "$GO_CCFLAGS" -gcflags "$GO_GCFLAGS" -ldflags "$GO_LDFLAGS" -v std
 	echo
 fi
 
 echo "# Building packages and commands for $GOOS/$GOARCH."
-"$GOTOOLDIR"/go_bootstrap install -gcflags "$GO_GCFLAGS" -ldflags "$GO_LDFLAGS" -v std
+"$GOTOOLDIR"/go_bootstrap install $GO_FLAGS -ccflags "$GO_CCFLAGS" -gcflags "$GO_GCFLAGS" -ldflags "$GO_LDFLAGS" -v std
 echo
 
 rm -f "$GOTOOLDIR"/go_bootstrap

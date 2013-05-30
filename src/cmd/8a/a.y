@@ -53,9 +53,9 @@
 %left	'+' '-'
 %left	'*' '/' '%'
 %token	<lval>	LTYPE0 LTYPE1 LTYPE2 LTYPE3 LTYPE4
-%token	<lval>	LTYPEC LTYPED LTYPEN LTYPER LTYPET LTYPES LTYPEM LTYPEI LTYPEG
-%token	<lval>	LCONST LFP LPC LSB
-%token	<lval>	LBREG LLREG LSREG LFREG
+%token	<lval>	LTYPEC LTYPED LTYPEN LTYPER LTYPET LTYPES LTYPEM LTYPEI LTYPEG LTYPEXC
+%token	<lval>	LTYPEX LCONST LFP LPC LSB
+%token	<lval>	LBREG LLREG LSREG LFREG LXREG
 %token	<dval>	LFCONST
 %token	<sval>	LSCONST LSP
 %token	<sym>	LNAME LLAB LVAR
@@ -63,7 +63,7 @@
 %type	<con2>	con2
 %type	<gen>	mem imm imm2 reg nam rel rem rim rom omem nmem
 %type	<gen2>	nonnon nonrel nonrem rimnon rimrem remrim
-%type	<gen2>	spec1 spec2 spec3 spec4 spec5 spec6 spec7 spec8
+%type	<gen2>	spec1 spec2 spec3 spec4 spec5 spec6 spec7 spec8 spec9 spec10
 %%
 prog:
 |	prog
@@ -116,6 +116,8 @@ inst:
 |	LTYPEM spec6	{ outcode($1, &$2); }
 |	LTYPEI spec7	{ outcode($1, &$2); }
 |	LTYPEG spec8	{ outcode($1, &$2); }
+|	LTYPEXC spec9	{ outcode($1, &$2); }
+|	LTYPEX spec10	{ outcode($1, &$2); }
 
 nonnon:
 	{
@@ -176,6 +178,11 @@ nonrel:
 	{
 		$$.from = nullgen;
 		$$.to = $1;
+	}
+|	imm ',' rel
+	{
+		$$.from = $1;
+		$$.to = $3;
 	}
 
 spec1:	/* DATA */
@@ -282,6 +289,24 @@ spec8:	/* GLOBL */
 		$$.to = $5;
 	}
 
+spec9:	/* CMPPS/CMPPD */
+	reg ',' rem ',' con
+	{
+		$$.from = $1;
+		$$.to = $3;
+		$$.to.offset = $5;
+	}
+
+spec10:	/* PINSRD */
+	imm ',' rem ',' reg
+	{
+		$$.from = $3;
+		$$.to = $5;
+		if($1.type != D_CONST)
+			yyerror("illegal constant");
+		$$.to.offset = $1.offset;
+	}
+
 rem:
 	reg
 |	mem
@@ -341,6 +366,11 @@ reg:
 		$$.type = $1;
 	}
 |	LLREG
+	{
+		$$ = nullgen;
+		$$.type = $1;
+	}
+|	LXREG
 	{
 		$$ = nullgen;
 		$$.type = $1;
@@ -469,6 +499,15 @@ omem:
 		checkscale($$.scale);
 	}
 |	con '(' LLREG ')' '(' LLREG '*' con ')'
+	{
+		$$ = nullgen;
+		$$.type = D_INDIR+$3;
+		$$.offset = $1;
+		$$.index = $6;
+		$$.scale = $8;
+		checkscale($$.scale);
+	}
+|	con '(' LLREG ')' '(' LSREG '*' con ')'
 	{
 		$$ = nullgen;
 		$$.type = D_INDIR+$3;

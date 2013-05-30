@@ -13,7 +13,7 @@ Besides this overview you might want to consult the
 
 <p>
 When you compile and link your Go programs with the <code>gc</code> toolchain
-on Linux, Mac OS X or FreeBSD, the resulting binaries contain DWARFv3
+on Linux, Mac OS X, FreeBSD or NetBSD, the resulting binaries contain DWARFv3
 debugging information that recent versions (&gt;7.1) of the GDB debugger can
 use to inspect a live process or a core dump.
 </p>
@@ -36,8 +36,7 @@ debugged.
 
 <ul>
 <li>
-Show file and line number for code 
-, set breakpoints and disassemble:
+Show file and line number for code, set breakpoints and disassemble:
 <pre>(gdb) <b>list</b>
 (gdb) <b>list <i>line</i></b>
 (gdb) <b>list <i>file.go</i>:<i>line</i></b>
@@ -180,7 +179,7 @@ $ <b>gdb regexp.test -d $GOROOT</b>
 If for some reason GDB still can't find that directory or that script, you can load
 it by hand by telling gdb (assuming you have the go sources in
 <code>~/go/</code>):
-<p>
+</p>
 
 <pre>
 (gdb) <b>source ~/go/src/pkg/runtime/runtime-gdb.py</b>

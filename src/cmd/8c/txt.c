@@ -1253,6 +1253,14 @@ gopcode(int o, Type *ty, Node *f, Node *t)
 			a = ASALW;
 		break;
 
+	case OROTL:
+		a = AROLL;
+		if(et == TCHAR || et == TUCHAR)
+			a = AROLB;
+		if(et == TSHORT || et == TUSHORT)
+			a = AROLW;
+		break;
+
 	case OFUNC:
 		a = ACALL;
 		break;
@@ -1381,6 +1389,21 @@ gpseudo(int a, Sym *s, Node *n)
 	naddr(n, &p->to);
 	if(a == ADATA || a == AGLOBL)
 		pc--;
+}
+
+void
+gprefetch(Node *n)
+{
+	Node n1;
+	
+	if(strcmp(getgo386(), "sse2") != 0) // assume no prefetch on old machines
+		return;
+
+	regalloc(&n1, n, Z);
+	gmove(n, &n1);
+	n1.op = OINDREG;
+	gins(APREFETCHNTA, &n1, Z);
+	regfree(&n1);
 }
 
 int

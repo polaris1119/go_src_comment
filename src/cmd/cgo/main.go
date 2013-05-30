@@ -31,8 +31,9 @@ type Package struct {
 	PackageName string // name of package
 	PackagePath string
 	PtrSize     int64
+	IntSize     int64
 	GccOptions  []string
-	CgoFlags    map[string]string // #cgo flags (CFLAGS, LDFLAGS)
+	CgoFlags    map[string][]string // #cgo flags (CFLAGS, LDFLAGS)
 	Written     map[string]bool
 	Name        map[string]*Name // accumulated Name from Files
 	ExpFunc     []*ExpFunc       // accumulated ExpFunc from Files
@@ -129,12 +130,19 @@ var ptrSizeMap = map[string]int64{
 	"arm":   4,
 }
 
+var intSizeMap = map[string]int64{
+	"386":   4,
+	"amd64": 8,
+	"arm":   4,
+}
+
 var cPrefix string
 
 var fset = token.NewFileSet()
 
 var dynobj = flag.String("dynimport", "", "if non-empty, print dynamic import data for that file")
 var dynout = flag.String("dynout", "", "write -dynobj output to this file")
+var dynlinker = flag.Bool("dynlinker", false, "record dynamic linker information in dynimport mode")
 
 // These flags are for bootstrapping a new Go implementation,
 // to generate Go and C headers that match the data layout and
@@ -147,6 +155,7 @@ var gccgo = flag.Bool("gccgo", false, "generate files for use with gccgo")
 var gccgoprefix = flag.String("gccgoprefix", "", "-fgo-prefix option used with gccgo")
 var gccgopkgpath = flag.String("gccgopkgpath", "", "-fgo-pkgpath option used with gccgo")
 var importRuntimeCgo = flag.Bool("import_runtime_cgo", true, "import runtime/cgo in generated code")
+var importSyscall = flag.Bool("import_syscall", true, "import syscall in generated code")
 var goarch, goos string
 
 func main() {
@@ -199,6 +208,15 @@ func main() {
 
 	p := newPackage(args[:i])
 
+	// Record CGO_LDFLAGS from the environment for external linking.
+	if ldflags := os.Getenv("CGO_LDFLAGS"); ldflags != "" {
+		args, err := splitQuoted(ldflags)
+		if err != nil {
+			fatalf("bad CGO_LDFLAGS: %q (%s)", ldflags, err)
+		}
+		p.addToFlag("LDFLAGS", args)
+	}
+
 	// Need a unique prefix for the global C symbols that
 	// we use to coordinate between gcc and ourselves.
 	// We already put _cgo_ at the beginning, so the main
@@ -217,10 +235,9 @@ func main() {
 
 	fs := make([]*File, len(goFiles))
 	for i, input := range goFiles {
-		// Parse flags for all files before translating due to CFLAGS.
 		f := new(File)
 		f.ReadGo(input)
-		p.ParseFlags(f, input)
+		f.DiscardCgoDirectives()
 		fs[i] = f
 	}
 
@@ -273,11 +290,6 @@ func main() {
 // newPackage returns a new Package that will invoke
 // gcc with the additional arguments specified in args.
 func newPackage(args []string) *Package {
-	// Copy the gcc options to a new slice so the list
-	// can grow without overwriting the slice that args is in.
-	gccOptions := make([]string, len(args))
-	copy(gccOptions, args)
-
 	goarch = runtime.GOARCH
 	if s := os.Getenv("GOARCH"); s != "" {
 		goarch = s
@@ -288,7 +300,11 @@ func newPackage(args []string) *Package {
 	}
 	ptrSize := ptrSizeMap[goarch]
 	if ptrSize == 0 {
-		fatalf("unknown $GOARCH %q", goarch)
+		fatalf("unknown ptrSize for $GOARCH %q", goarch)
+	}
+	intSize := intSizeMap[goarch]
+	if intSize == 0 {
+		fatalf("unknown intSize for $GOARCH %q", goarch)
 	}
 
 	// Reset locale variables so gcc emits English errors [sic].
@@ -296,11 +312,12 @@ func newPackage(args []string) *Package {
 	os.Setenv("LC_ALL", "C")
 
 	p := &Package{
-		PtrSize:    ptrSize,
-		GccOptions: gccOptions,
-		CgoFlags:   make(map[string]string),
-		Written:    make(map[string]bool),
+		PtrSize:  ptrSize,
+		IntSize:  intSize,
+		CgoFlags: make(map[string][]string),
+		Written:  make(map[string]bool),
 	}
+	p.addToFlag("CFLAGS", args)
 	return p
 }
 

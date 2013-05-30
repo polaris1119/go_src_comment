@@ -5,21 +5,20 @@
 /*
  * Runtime type representation; master is type.go
  *
- * The *Types here correspond 1-1 to type.go's *Type's, but are
- * prefixed with an extra header of 2 pointers, corresponding to the
- * interface{} structure, which itself is called type Type again on
- * the Go side.
+ * The Type*s here correspond 1-1 to type.go's *rtype.
  */
 
-typedef struct CommonType CommonType;
+typedef struct Type Type;
 typedef struct UncommonType UncommonType;
 typedef struct InterfaceType InterfaceType;
 typedef struct Method Method;
 typedef struct IMethod IMethod;
 typedef struct SliceType SliceType;
 typedef struct FuncType FuncType;
+typedef struct PtrType PtrType;
 
-struct CommonType
+// Needs to be in sync with typekind.h/CommonSize
+struct Type
 {
 	uintptr size;
 	uint32 hash;
@@ -28,40 +27,10 @@ struct CommonType
 	uint8 fieldAlign;
 	uint8 kind;
 	Alg *alg;
+	void *gc;
 	String *string;
 	UncommonType *x;
 	Type *ptrto;
-};
-
-enum {
-	KindBool = 1,
-	KindInt,
-	KindInt8,
-	KindInt16,
-	KindInt32,
-	KindInt64,
-	KindUint,
-	KindUint8,
-	KindUint16,
-	KindUint32,
-	KindUint64,
-	KindUintptr,
-	KindFloat32,
-	KindFloat64,
-	KindComplex64,
-	KindComplex128,
-	KindArray,
-	KindChan,
-	KindFunc,
-	KindInterface,
-	KindMap,
-	KindPtr,
-	KindSlice,
-	KindString,
-	KindStruct,
-	KindUnsafePointer,
-	
-	KindNoPointers = 1<<7,
 };
 
 struct Method
@@ -80,13 +49,6 @@ struct UncommonType
 	String *pkgPath;
 	Slice mhdr;
 	Method m[];
-};
-
-struct Type
-{
-	void *type;	// interface{} value
-	void *ptr;
-	CommonType;
 };
 
 struct IMethod
@@ -129,4 +91,10 @@ struct FuncType
 	bool dotdotdot;
 	Slice in;
 	Slice out;
+};
+
+struct PtrType
+{
+	Type;
+	Type *elem;
 };

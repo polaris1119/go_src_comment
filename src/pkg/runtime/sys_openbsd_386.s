@@ -12,14 +12,31 @@
 TEXT runtime·exit(SB),7,$-4
 	MOVL	$1, AX
 	INT	$0x80
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
-TEXT runtime·exit1(SB),7,$-4
-	MOVL	$302, AX		// sys_threxit
+TEXT runtime·exit1(SB),7,$8
+	MOVL	$0, 0(SP)
+	MOVL	$0, 4(SP)		// arg 1 - notdead
+	MOVL	$302, AX		// sys___threxit
 	INT	$0x80
 	JAE	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·open(SB),7,$-4
+	MOVL	$5, AX
+	INT	$0x80
+	RET
+
+TEXT runtime·close(SB),7,$-4
+	MOVL	$6, AX
+	INT	$0x80
+	RET
+
+TEXT runtime·read(SB),7,$-4
+	MOVL	$3, AX
+	INT	$0x80
 	RET
 
 TEXT runtime·write(SB),7,$-4
@@ -45,12 +62,13 @@ TEXT runtime·usleep(SB),7,$20
 	INT	$0x80
 	RET
 
-TEXT runtime·raisesigpipe(SB),7,$12
+TEXT runtime·raise(SB),7,$12
 	MOVL	$299, AX		// sys_getthrid
 	INT	$0x80
 	MOVL	$0, 0(SP)
 	MOVL	AX, 4(SP)		// arg 1 - pid
-	MOVL	$13, 8(SP)		// arg 2 - signum == SIGPIPE
+	MOVL	sig+0(FP), AX
+	MOVL	AX, 8(SP)		// arg 2 - signum
 	MOVL	$37, AX			// sys_kill
 	INT	$0x80
 	RET
@@ -67,19 +85,24 @@ TEXT runtime·mmap(SB),7,$36
 	MOVL	$0, AX
 	STOSL				// arg 6 - pad
 	MOVSL				// arg 7 - offset
-	MOVL	$0, AX			// top 64 bits of file offset
+	MOVL	$0, AX			// top 32 bits of file offset
 	STOSL
 	MOVL	$197, AX		// sys_mmap
 	INT	$0x80
-	JCC	2(PC)
-	NEGL	AX
 	RET
 
 TEXT runtime·munmap(SB),7,$-4
 	MOVL	$73, AX			// sys_munmap
 	INT	$0x80
 	JAE	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·madvise(SB),7,$-4
+	MOVL	$75, AX			// sys_madvise
+	INT	$0x80
+	JAE	2(PC)
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
 TEXT runtime·setitimer(SB),7,$-4
@@ -89,40 +112,38 @@ TEXT runtime·setitimer(SB),7,$-4
 
 // func now() (sec int64, nsec int32)
 TEXT time·now(SB), 7, $32
-	MOVL	$116, AX
+	MOVL	$232, AX
 	LEAL	12(SP), BX
-	MOVL	BX, 4(SP)
-	MOVL	$0, 8(SP)
+	MOVL	$0, 4(SP)
+	MOVL	BX, 8(SP)
 	INT	$0x80
 	MOVL	12(SP), AX		// sec
-	MOVL	16(SP), BX		// usec
+	MOVL	16(SP), BX		// nsec
 
-	// sec is in AX, usec in BX
+	// sec is in AX, nsec in BX
 	MOVL	AX, sec+0(FP)
 	MOVL	$0, sec+4(FP)
-	IMULL	$1000, BX
 	MOVL	BX, nsec+8(FP)
 	RET
 
 // int64 nanotime(void) so really
 // void nanotime(int64 *nsec)
 TEXT runtime·nanotime(SB),7,$32
-	MOVL	$116, AX
+	MOVL	$232, AX
 	LEAL	12(SP), BX
-	MOVL	BX, 4(SP)
-	MOVL	$0, 8(SP)
+	MOVL	$0, 4(SP)
+	MOVL	BX, 8(SP)
 	INT	$0x80
 	MOVL	12(SP), AX		// sec
-	MOVL	16(SP), BX		// usec
+	MOVL	16(SP), BX		// nsec
 
-	// sec is in AX, usec in BX
+	// sec is in AX, nsec in BX
 	// convert to DX:AX nsec
 	MOVL	$1000000000, CX
 	MULL	CX
-	IMULL	$1000, BX
 	ADDL	BX, AX
 	ADCL	$0, DX
-	
+
 	MOVL	ret+0(FP), DI
 	MOVL	AX, 0(DI)
 	MOVL	DX, 4(DI)
@@ -132,7 +153,15 @@ TEXT runtime·sigaction(SB),7,$-4
 	MOVL	$46, AX			// sys_sigaction
 	INT	$0x80
 	JAE	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
+	RET
+
+TEXT runtime·sigprocmask(SB),7,$-4
+	MOVL	$48, AX			// sys_sigprocmask
+	INT	$0x80
+	JAE	2(PC)
+	MOVL	$0xf1, 0xf1		// crash
+	MOVL	AX, oset+0(FP)
 	RET
 
 TEXT runtime·sigtramp(SB),7,$44
@@ -141,8 +170,11 @@ TEXT runtime·sigtramp(SB),7,$44
 	// check that m exists
 	MOVL	m(CX), BX
 	CMPL	BX, $0
-	JNE	2(PC)
+	JNE	5(PC)
+	MOVL	signo+0(FP), BX
+	MOVL	BX, 0(SP)
 	CALL	runtime·badsignal(SB)
+	RET
 
 	// save g
 	MOVL	g(CX), DI
@@ -174,44 +206,46 @@ TEXT runtime·sigtramp(SB),7,$44
 	MOVL	AX, 4(SP)		// arg 1 - sigcontext
 	MOVL	$103, AX		// sys_sigreturn
 	INT	$0x80
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
-// int32 rfork_thread(int32 flags, void *stack, M *m, G *g, void (*fn)(void));
-TEXT runtime·rfork_thread(SB),7,$8
-	MOVL	flags+8(SP), AX
-	MOVL	stack+12(SP), CX
+// int32 tfork(void *param, uintptr psize, M *mp, G *gp, void (*fn)(void));
+TEXT runtime·tfork(SB),7,$12
 
-	// Copy m, g, fn off parent stack for use by child.
+	// Copy mp, gp and fn from the parent stack onto the child stack.
+	MOVL	params+4(FP), AX
+	MOVL	8(AX), CX		// tf_stack
 	SUBL	$16, CX
-	MOVL	mm+16(SP), SI
+	MOVL	CX, 8(AX)
+	MOVL	mm+12(FP), SI
 	MOVL	SI, 0(CX)
-	MOVL	gg+20(SP), SI
+	MOVL	gg+16(FP), SI
 	MOVL	SI, 4(CX)
-	MOVL	fn+24(SP), SI
+	MOVL	fn+20(FP), SI
 	MOVL	SI, 8(CX)
 	MOVL	$1234, 12(CX)
-	MOVL	CX, SI
 
 	MOVL	$0, 0(SP)		// syscall gap
-	MOVL	AX, 4(SP)		// arg 1 - flags
-	MOVL	$251, AX		// sys_rfork
+	MOVL	params+4(FP), AX
+	MOVL	AX, 4(SP)		// arg 1 - param
+	MOVL	psize+8(FP), AX
+	MOVL	AX, 8(SP)		// arg 2 - psize
+	MOVL	$8, AX			// sys___tfork
 	INT	$0x80
 
-	// Return if rfork syscall failed
-	JCC	4(PC)
+	// Return if tfork syscall failed.
+	JCC	5(PC)
 	NEGL	AX
-	MOVL	AX, 48(SP)
+	MOVL	ret+0(FP), DX
+	MOVL	AX, 0(DX)
 	RET
 
 	// In parent, return.
 	CMPL	AX, $0
-	JEQ	3(PC)
-	MOVL	AX, 48(SP)
+	JEQ	4(PC)
+	MOVL	ret+0(FP), DX
+	MOVL	AX, 0(DX)
 	RET
-
-	// In child, on new stack.
-	MOVL    SI, SP
 
 	// Paranoia: check that SP is as we expect.
 	MOVL	12(SP), BP
@@ -219,17 +253,12 @@ TEXT runtime·rfork_thread(SB),7,$8
 	JEQ	2(PC)
 	INT	$3
 
-	// Reload registers
+	// Reload registers.
 	MOVL	0(SP), BX		// m
 	MOVL	4(SP), DX		// g
 	MOVL	8(SP), SI		// fn
 
-	// Initialize m->procid to thread ID
-	MOVL	$299, AX		// sys_getthrid
-	INT	$0x80
-	MOVL	AX, m_procid(BX)
-
-	// Set FS to point at m->tls
+	// Set FS to point at m->tls.
 	LEAL	m_tls(BX), BP
 	PUSHAL				// save registers
 	PUSHL	BP
@@ -246,12 +275,12 @@ TEXT runtime·rfork_thread(SB),7,$8
 	MOVL	0(DX), DX		// paranoia; check they are not nil
 	MOVL	0(BX), BX
 
-	// more paranoia; check that stack splitting code works
+	// More paranoia; check that stack splitting code works.
 	PUSHAL
 	CALL	runtime·emptyfunc(SB)
 	POPAL
 
-	// Call fn
+	// Call fn.
 	CALL	SI
 
 	CALL	runtime·exit1(SB)
@@ -268,25 +297,23 @@ TEXT runtime·sigaltstack(SB),7,$-8
 	INT	$3
 	RET
 
-TEXT runtime·setldt(SB),7,$8
+TEXT runtime·setldt(SB),7,$4
 	// Under OpenBSD we set the GS base instead of messing with the LDT.
-	MOVL	16(SP), AX		// tls0
+	MOVL	tls0+4(FP), AX
 	MOVL	AX, 0(SP)
 	CALL	runtime·settls(SB)
 	RET
 
-TEXT runtime·settls(SB),7,$16
+TEXT runtime·settls(SB),7,$8
 	// adjust for ELF: wants to use -8(GS) and -4(GS) for g and m
-	MOVL	20(SP), CX
+	MOVL	tlsbase+0(FP), CX
 	ADDL	$8, CX
-	MOVL	CX, 0(CX)
 	MOVL	$0, 0(SP)		// syscall gap
-	MOVL	$9, 4(SP)		// I386_SET_GSBASE (machine/sysarch.h)
-	MOVL	CX, 8(SP)		// pointer to base
-	MOVL	$165, AX		// sys_sysarch
+	MOVL	CX, 4(SP)		// arg 1 - tcb
+	MOVL	$329, AX		// sys___set_tcb
 	INT	$0x80
 	JCC	2(PC)
-	MOVL	$0xf1, 0xf1  // crash
+	MOVL	$0xf1, 0xf1		// crash
 	RET
 
 TEXT runtime·osyield(SB),7,$-4
@@ -295,12 +322,12 @@ TEXT runtime·osyield(SB),7,$-4
 	RET
 
 TEXT runtime·thrsleep(SB),7,$-4
-	MOVL	$300, AX		// sys_thrsleep
+	MOVL	$300, AX		// sys___thrsleep
 	INT	$0x80
 	RET
 
 TEXT runtime·thrwakeup(SB),7,$-4
-	MOVL	$301, AX		// sys_thrwakeup
+	MOVL	$301, AX		// sys___thrwakeup
 	INT	$0x80
 	RET
 

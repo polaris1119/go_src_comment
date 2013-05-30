@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
+	"go/printer"
 	"io"
 	"log"
 	"net/http"
@@ -73,9 +74,12 @@ var (
 )
 
 func serveError(w http.ResponseWriter, r *http.Request, relpath string, err error) {
-	contents := applyTemplate(errorHTML, "errorHTML", err) // err may contain an absolute path!
 	w.WriteHeader(http.StatusNotFound)
-	servePage(w, relpath, "File "+relpath, "", "", contents)
+	servePage(w, Page{
+		Title:    "File " + relpath,
+		Subtitle: relpath,
+		Body:     applyTemplate(errorHTML, "errorHTML", err), // err may contain an absolute path!
+	})
 }
 
 func usage() {
@@ -221,6 +225,8 @@ func main() {
 	// Print content that would be served at the URL *urlFlag.
 	if *urlFlag != "" {
 		registerPublicHandlers(http.DefaultServeMux)
+		initFSTree()
+		updateMetadata()
 		// Try up to 10 fetches, following redirects.
 		urlstr := *urlFlag
 		for i := 0; i < 10; i++ {
@@ -278,10 +284,7 @@ func main() {
 		}
 
 		registerPublicHandlers(http.DefaultServeMux)
-
-		// Playground handlers are not available in local godoc.
-		http.HandleFunc("/compile", disabledHandler)
-		http.HandleFunc("/share", disabledHandler)
+		registerPlaygroundHandlers(http.DefaultServeMux)
 
 		// Initialize default directory tree with corresponding timestamp.
 		// (Do it in a goroutine so that launch is quick.)
@@ -344,7 +347,7 @@ func main() {
 		fs.Bind(target, OS(path), "/", bindReplace)
 		abspath = target
 	} else if strings.HasPrefix(path, cmdPrefix) {
-		path = path[len(cmdPrefix):]
+		path = strings.TrimPrefix(path, cmdPrefix)
 		forceCmd = true
 	} else if bp, _ := build.Import(path, "", build.FindOnly); bp.Dir != "" && bp.ImportPath != "" {
 		fs.Bind(target, OS(bp.Dir), "/", bindReplace)
@@ -369,30 +372,28 @@ func main() {
 		}
 		mode |= showSource
 	}
-	// TODO(gri): Provide a mechanism (flag?) to select a package
-	//            if there are multiple packages in a directory.
 
 	// first, try as package unless forced as command
-	var info PageInfo
+	var info *PageInfo
 	if !forceCmd {
-		info = pkgHandler.getPageInfo(abspath, relpath, "", mode)
+		info = pkgHandler.getPageInfo(abspath, relpath, mode)
 	}
 
 	// second, try as command unless the path is absolute
 	// (the go command invokes godoc w/ absolute paths; don't override)
-	var cinfo PageInfo
+	var cinfo *PageInfo
 	if !filepath.IsAbs(path) {
 		abspath = pathpkg.Join(cmdHandler.fsRoot, path)
-		cinfo = cmdHandler.getPageInfo(abspath, relpath, "", mode)
+		cinfo = cmdHandler.getPageInfo(abspath, relpath, mode)
 	}
 
 	// determine what to use
-	if info.IsEmpty() {
-		if !cinfo.IsEmpty() {
+	if info == nil || info.IsEmpty() {
+		if cinfo != nil && !cinfo.IsEmpty() {
 			// only cinfo exists - switch to cinfo
 			info = cinfo
 		}
-	} else if !cinfo.IsEmpty() {
+	} else if cinfo != nil && !cinfo.IsEmpty() {
 		// both info and cinfo exist - use cinfo if info
 		// contains only subdirectory information
 		if info.PAst == nil && info.PDoc == nil {
@@ -402,15 +403,19 @@ func main() {
 		}
 	}
 
+	if info == nil {
+		log.Fatalf("%s: no such directory or package", flag.Arg(0))
+	}
 	if info.Err != nil {
 		log.Fatalf("%v", info.Err)
 	}
+
 	if info.PDoc != nil && info.PDoc.ImportPath == target {
 		// Replace virtual /target with actual argument from command line.
 		info.PDoc.ImportPath = flag.Arg(0)
 	}
 
-	// If we have more than one argument, use the remaining arguments for filtering
+	// If we have more than one argument, use the remaining arguments for filtering.
 	if flag.NArg() > 1 {
 		args := flag.Args()[1:]
 		rx := makeRx(args)
@@ -421,20 +426,24 @@ func main() {
 		filter := func(s string) bool { return rx.MatchString(s) }
 		switch {
 		case info.PAst != nil:
+			cmap := ast.NewCommentMap(info.FSet, info.PAst, info.PAst.Comments)
 			ast.FilterFile(info.PAst, filter)
 			// Special case: Don't use templates for printing
 			// so we only get the filtered declarations without
 			// package clause or extra whitespace.
 			for i, d := range info.PAst.Decls {
+				// determine the comments associated with d only
+				comments := cmap.Filter(d).Comments()
+				cn := &printer.CommentedNode{Node: d, Comments: comments}
 				if i > 0 {
 					fmt.Println()
 				}
 				if *html {
 					var buf bytes.Buffer
-					writeNode(&buf, info.FSet, d)
+					writeNode(&buf, info.FSet, cn)
 					FormatText(os.Stdout, buf.Bytes(), -1, true, "", nil)
 				} else {
-					writeNode(os.Stdout, info.FSet, d)
+					writeNode(os.Stdout, info.FSet, cn)
 				}
 				fmt.Println()
 			}
@@ -459,9 +468,3 @@ type httpWriter struct {
 
 func (w *httpWriter) Header() http.Header  { return w.h }
 func (w *httpWriter) WriteHeader(code int) { w.code = code }
-
-// disabledHandler serves a 501 "Not Implemented" response.
-func disabledHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-	fmt.Fprint(w, "This functionality is not available via local godoc.")
-}

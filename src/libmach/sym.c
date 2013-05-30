@@ -1,11 +1,11 @@
 // Inferno libmach/sym.c
 // http://code.google.com/p/inferno-os/source/browse/utils/libmach/sym.c
 //
-// 	Copyright © 1994-1999 Lucent Technologies Inc.
-// 	Power PC support Copyright © 1995-2004 C H Forsyth (forsyth@terzarima.net).
-// 	Portions Copyright © 1997-1999 Vita Nuova Limited.
-// 	Portions Copyright © 2000-2007 Vita Nuova Holdings Limited (www.vitanuova.com).
-// 	Revisions Copyright © 2000-2004 Lucent Technologies Inc. and others.
+//	Copyright © 1994-1999 Lucent Technologies Inc.
+//	Power PC support Copyright © 1995-2004 C H Forsyth (forsyth@terzarima.net).
+//	Portions Copyright © 1997-1999 Vita Nuova Limited.
+//	Portions Copyright © 2000-2007 Vita Nuova Holdings Limited (www.vitanuova.com).
+//	Revisions Copyright © 2000-2004 Lucent Technologies Inc. and others.
 //	Portions Copyright © 2009 The Go Authors.  All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -109,15 +109,21 @@ int
 syminit(int fd, Fhdr *fp)
 {
 	Sym *p;
-	int32 i, l, size;
+	int32 i, l, size, symsz;
 	vlong vl;
 	Biobuf b;
-	int svalsz;
+	int svalsz, newformat, shift;
+	uvlong (*swav)(uvlong);
+	uint32 (*swal)(uint32);
+	uchar buf[8], c;
 
 	if(fp->symsz == 0)
 		return 0;
 	if(fp->type == FNONE)
 		return 0;
+
+	swav = beswav;
+	swal = beswal;
 
 	cleansyms();
 	textseg(fp->txtaddr, fp);
@@ -129,40 +135,131 @@ syminit(int fd, Fhdr *fp)
 	}
 	Binit(&b, fd, OREAD);
 	Bseek(&b, fp->symoff, 0);
+	memset(buf, 0, sizeof buf);
+	Bread(&b, buf, sizeof buf);
+	newformat = 0;
+	symsz = fp->symsz;
+	if(memcmp(buf, "\xfd\xff\xff\xff\x00\x00\x00", 7) == 0) {
+		swav = leswav;
+		swal = leswal;
+		newformat = 1;
+	} else if(memcmp(buf, "\xff\xff\xff\xfd\x00\x00\x00", 7) == 0) {
+		newformat = 1;
+	} else if(memcmp(buf, "\xfe\xff\xff\xff\x00\x00", 6) == 0) {
+		// Table format used between Go 1.0 and Go 1.1:
+		// little-endian but otherwise same as the old Go 1.0 table.
+		// Not likely to be seen much in practice, but easy to handle.
+		swav = leswav;
+		swal = leswal;
+		Bseek(&b, fp->symoff+6, 0);
+		symsz -= 6;
+	} else {
+		Bseek(&b, fp->symoff, 0);
+	}
+	svalsz = 0;
+	if(newformat) {
+		svalsz = buf[7];
+		if(svalsz != 4 && svalsz != 8) {
+			werrstr("invalid word size %d bytes", svalsz);
+			return -1;
+		}
+		symsz -= 8;
+	}
+
 	nsym = 0;
 	size = 0;
-	for(p = symbols; size < fp->symsz; p++, nsym++) {
-		if(fp->_magic && (fp->magic & HDR_MAGIC)){
-			svalsz = 8;
-			if(Bread(&b, &vl, 8) != 8)
-				return symerrmsg(8, "symbol");
-			p->value = beswav(vl);
-		}
-		else{
-			svalsz = 4;
-			if(Bread(&b, &l, 4) != 4)
-				return symerrmsg(4, "symbol");
-			p->value = (u32int)beswal(l);
-		}
-		if(Bread(&b, &p->type, sizeof(p->type)) != sizeof(p->type))
-			return symerrmsg(sizeof(p->value), "symbol");
+	for(p = symbols; size < symsz; p++, nsym++) {
+		if(newformat) {
+			// Go 1.1 format. See comment at top of ../pkg/runtime/symtab.c.
+			if(Bread(&b, &c, 1) != 1)
+				return symerrmsg(1, "symbol");
+			if((c&0x3F) < 26)
+				p->type = (c&0x3F)+ 'A';
+			else
+				p->type = (c&0x3F) - 26 + 'a';
+			size++;
 
-		i = decodename(&b, p);
-		if(i < 0)
-			return -1;
-		size += i+svalsz+sizeof(p->type);
-
-		if(svalsz == 8){
-			if(Bread(&b, &vl, 8) != 8)
-				return symerrmsg(8, "symbol");
-			p->gotype = beswav(vl);
+			if(c&0x40) {
+				// Fixed-width address.
+				if(svalsz == 8) {
+					if(Bread(&b, &vl, 8) != 8)
+						return symerrmsg(8, "symbol");
+					p->value = swav(vl);
+				} else {
+					if(Bread(&b, &l, 4) != 4)
+						return symerrmsg(4, "symbol");
+					p->value = (u32int)swal(l);
+				}
+				size += svalsz;
+			} else {
+				// Varint address.
+				shift = 0;
+				p->value = 0;
+				for(;;) {
+					if(Bread(&b, buf, 1) != 1)
+						return symerrmsg(1, "symbol");
+					p->value |= (uint64)(buf[0]&0x7F)<<shift;
+					shift += 7;
+					size++;
+					if((buf[0]&0x80) == 0)
+						break;
+				}
+			}
+			p->gotype = 0;
+			if(c&0x80) {
+				// Has Go type. Fixed-width address.
+				if(svalsz == 8) {
+					if(Bread(&b, &vl, 8) != 8)
+						return symerrmsg(8, "symbol");
+					p->gotype = swav(vl);
+				} else {
+					if(Bread(&b, &l, 4) != 4)
+						return symerrmsg(4, "symbol");
+					p->gotype = (u32int)swal(l);
+				}
+				size += svalsz;
+			}
+			
+			// Name.
+			p->type |= 0x80; // for decodename
+			i = decodename(&b, p);
+			if(i < 0)
+				return -1;
+			size += i;
+		} else {
+			// Go 1.0 format: Plan 9 format + go type symbol.
+			if(fp->_magic && (fp->magic & HDR_MAGIC)){
+				svalsz = 8;
+				if(Bread(&b, &vl, 8) != 8)
+					return symerrmsg(8, "symbol");
+				p->value = swav(vl);
+			}
+			else{
+				svalsz = 4;
+				if(Bread(&b, &l, 4) != 4)
+					return symerrmsg(4, "symbol");
+				p->value = (u32int)swal(l);
+			}
+			if(Bread(&b, &p->type, sizeof(p->type)) != sizeof(p->type))
+				return symerrmsg(sizeof(p->value), "symbol");
+	
+			i = decodename(&b, p);
+			if(i < 0)
+				return -1;
+			size += i+svalsz+sizeof(p->type);
+	
+			if(svalsz == 8){
+				if(Bread(&b, &vl, 8) != 8)
+					return symerrmsg(8, "symbol");
+				p->gotype = swav(vl);
+			}
+			else{
+				if(Bread(&b, &l, 4) != 4)
+					return symerrmsg(4, "symbol");
+				p->gotype = (u32int)swal(l);
+			}
+			size += svalsz;
 		}
-		else{
-			if(Bread(&b, &l, 4) != 4)
-				return symerrmsg(4, "symbol");
-			p->gotype = (u32int)beswal(l);
-		}
-		size += svalsz;
 
 		/* count global & auto vars, text symbols, and file names */
 		switch (p->type) {
@@ -576,7 +673,8 @@ lookup(char *fn, char *var, Symbol *s)
  * strcmp, but allow '_' to match center dot (rune 00b7 == bytes c2 b7)
  */
 int
-cdotstrcmp(char *sym, char *user) {
+cdotstrcmp(char *sym, char *user)
+{
 	for (;;) {
 		while (*sym == *user) {
 			if (*sym++ == '\0')

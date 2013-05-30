@@ -40,7 +40,10 @@
 enum
 {
 	thechar = '8',
-	PtrSize = 4
+	PtrSize = 4,
+	IntSize = 4,
+	MaxAlign = 32,	// max data alignment
+	FuncAlign = 16
 };
 
 #define	P		((Prog*)0)
@@ -81,9 +84,12 @@ struct	Reloc
 {
 	int32	off;
 	uchar	siz;
+	uchar	done;
 	int32	type;
 	int32	add;
+	int32	xadd;
 	Sym*	sym;
+	Sym*	xsym;
 };
 
 struct	Prog
@@ -120,11 +126,12 @@ struct	Auto
 struct	Sym
 {
 	char*	name;
+	char*	extname;	// name used in external object files
 	short	type;
 	short	version;
 	uchar	dupok;
 	uchar	reachable;
-	uchar	dynexport;
+	uchar	cgoexport;
 	uchar	special;
 	uchar	stkcheck;
 	uchar	hide;
@@ -135,16 +142,21 @@ struct	Sym
 	int32	plt;
 	int32	got;
 	int32	align;	// if non-zero, required alignment in bytes
+	int32	elfsym;
+	int32	locals;	// size of stack frame locals area
+	int32	args;	// size of stack frame incoming arguments area
 	Sym*	hash;	// in hash table
 	Sym*	allsym;	// in all symbol list
 	Sym*	next;	// in text or data list
 	Sym*	sub;	// in sub list
 	Sym*	outer;	// container of sub
 	Sym*	gotype;
+	Sym*	reachparent;
+	Sym*	queue;
 	char*	file;
-	char*	dynimpname;
 	char*	dynimplib;
 	char*	dynimpvers;
+	struct Section*	sect;
 	
 	// STEXT
 	Auto*	autom;
@@ -157,13 +169,14 @@ struct	Sym
 	Reloc*	r;
 	int32	nr;
 	int32	maxr;
+	int 	rel_ro;
 };
 struct	Optab
 {
 	short	as;
 	uchar*	ytab;
 	uchar	prefix;
-	uchar	op[10];
+	uchar	op[12];
 };
 
 enum
@@ -201,11 +214,14 @@ enum
 	Ycr0,	Ycr1,	Ycr2,	Ycr3,	Ycr4,	Ycr5,	Ycr6,	Ycr7,
 	Ydr0,	Ydr1,	Ydr2,	Ydr3,	Ydr4,	Ydr5,	Ydr6,	Ydr7,
 	Ytr0,	Ytr1,	Ytr2,	Ytr3,	Ytr4,	Ytr5,	Ytr6,	Ytr7,
+	Ymr, Ymm,
+	Yxr, Yxm,
 	Ymax,
 
 	Zxxx		= 0,
 
 	Zlit,
+	Zlitm_r,
 	Z_rp,
 	Zbr,
 	Zcall,
@@ -222,10 +238,15 @@ enum
 	Zloop,
 	Zm_o,
 	Zm_r,
+	Zm2_r,
+	Zm_r_xm,
+	Zm_r_i_xm,
 	Zaut_r,
 	Zo_m,
 	Zpseudo,
 	Zr_m,
+	Zr_m_xm,
+	Zr_m_i_xm,
 	Zrp_,
 	Z_ib,
 	Z_il,
@@ -234,6 +255,7 @@ enum
 	Zib_rr,
 	Zil_rr,
 	Zclr,
+	Zibm_r,	/* mmx1,mmx2/mem64,imm8 */
 	Zbyte,
 	Zmov,
 	Zmax,
@@ -243,6 +265,8 @@ enum
 	Pm		= 0x0f,	/* 2byte opcode escape */
 	Pq		= 0xff,	/* both escape */
 	Pb		= 0xfe,	/* byte operands */
+	Pf2		= 0xf2,	/* xmm escape 1 */
+	Pf3		= 0xf3,	/* xmm escape 2 */
 };
 
 #pragma	varargck	type	"A"	int
@@ -261,15 +285,14 @@ EXTERN	int32	INITRND;
 EXTERN	int32	INITTEXT;
 EXTERN	int32	INITDAT;
 EXTERN	char*	INITENTRY;		/* entry point */
-EXTERN	int32	casepc;
+EXTERN	char*	LIBINITENTRY;		/* shared library entry point */
 EXTERN	char*	pcstr;
 EXTERN	Auto*	curauto;
 EXTERN	Auto*	curhist;
 EXTERN	Prog*	curp;
 EXTERN	Sym*	cursym;
 EXTERN	Sym*	datap;
-EXTERN	int32	elfdatsize;
-EXTERN	char	debug[128];
+EXTERN	int	debug[128];
 EXTERN	char	literal[32];
 EXTERN	Sym*	etextp;
 EXTERN	Prog*	firstp;
@@ -282,7 +305,6 @@ EXTERN	int	maxop;
 EXTERN	int	nerrors;
 EXTERN	char*	noname;
 EXTERN	int32	pc;
-EXTERN	char*	interpreter;
 EXTERN	char*	rpath;
 EXTERN	int32	spsize;
 EXTERN	Sym*	symlist;
@@ -295,7 +317,6 @@ EXTERN	int	dtype;
 EXTERN	int	tlsoffset;
 EXTERN	Sym*	adrgotype;	// type symbol on last Adr read
 EXTERN	Sym*	fromgotype;	// type symbol on last p->from read
-EXTERN	int	elftextsh;
 
 extern	Optab	optab[];
 extern	char*	anames[];

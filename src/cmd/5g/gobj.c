@@ -65,17 +65,17 @@ zhist(Biobuf *b, int line, vlong offset)
 	Bputc(b, line>>8);
 	Bputc(b, line>>16);
 	Bputc(b, line>>24);
-	zaddr(b, &zprog.from, 0);
+	zaddr(b, &zprog.from, 0, 0);
 	a = zprog.to;
 	if(offset != 0) {
 		a.offset = offset;
 		a.type = D_CONST;
 	}
-	zaddr(b, &a, 0);
+	zaddr(b, &a, 0, 0);
 }
 
 void
-zaddr(Biobuf *b, Addr *a, int s)
+zaddr(Biobuf *b, Addr *a, int s, int gotype)
 {
 	int32 l;
 	uint64 e;
@@ -95,6 +95,7 @@ zaddr(Biobuf *b, Addr *a, int s)
 		Bputc(b, a->reg);
 		Bputc(b, s);
 		Bputc(b, a->name);
+		Bputc(b, gotype);
 	}
 
 	switch(a->type) {
@@ -128,9 +129,9 @@ zaddr(Biobuf *b, Addr *a, int s)
 		break;
 
 	case D_BRANCH:
-		if(a->branch == nil)
+		if(a->u.branch == nil)
 			fatal("unpatched branch");
-		a->offset = a->branch->loc;
+		a->offset = a->u.branch->loc;
 		l = a->offset;
 		Bputc(b, l);
 		Bputc(b, l>>8);
@@ -139,7 +140,7 @@ zaddr(Biobuf *b, Addr *a, int s)
 		break;
 
 	case D_SCONST:
-		n = a->sval;
+		n = a->u.sval;
 		for(i=0; i<NSNAME; i++) {
 			Bputc(b, *n);
 			n++;
@@ -147,11 +148,12 @@ zaddr(Biobuf *b, Addr *a, int s)
 		break;
 
 	case D_REGREG:
+	case D_REGREG2:
 		Bputc(b, a->offset);
 		break;
 
 	case D_FCONST:
-		ieeedtod(&e, a->dval);
+		ieeedtod(&e, a->u.dval);
 		l = e;
 		Bputc(b, l);
 		Bputc(b, l>>8);
@@ -166,20 +168,66 @@ zaddr(Biobuf *b, Addr *a, int s)
 	}
 }
 
+static struct {
+	struct { Sym *sym; short type; } h[NSYM];
+	int sym;
+} z;
+
+static void
+zsymreset(void)
+{
+	for(z.sym=0; z.sym<NSYM; z.sym++) {
+		z.h[z.sym].sym = S;
+		z.h[z.sym].type = 0;
+	}
+	z.sym = 1;
+}
+
+static int
+zsym(Sym *s, int t, int *new)
+{
+	int i;
+
+	*new = 0;
+	if(s == S)
+		return 0;
+
+	i = s->sym;
+	if(i < 0 || i >= NSYM)
+		i = 0;
+	if(z.h[i].type == t && z.h[i].sym == s)
+		return i;
+	i = z.sym;
+	s->sym = i;
+	zname(bout, s, t);
+	z.h[i].sym = s;
+	z.h[i].type = t;
+	if(++z.sym >= NSYM)
+		z.sym = 1;
+	*new = 1;
+	return i;
+}
+
+static int
+zsymaddr(Addr *a, int *new)
+{
+	int t;
+
+	t = a->name;
+	if(t == D_ADDR)
+		t = a->name;
+	return zsym(a->sym, t, new);
+}
+
 void
 dumpfuncs(void)
 {
 	Plist *pl;
-	int sf, st, t, sym;
-	struct { Sym *sym; short type; } h[NSYM];
+	int sf, st, gf, gt, new;
 	Sym *s;
 	Prog *p;
 
-	for(sym=0; sym<NSYM; sym++) {
-		h[sym].sym = S;
-		h[sym].type = 0;
-	}
-	sym = 1;
+	zsymreset();
 
 	// fix up pc
 	pcloc = 0;
@@ -209,53 +257,20 @@ dumpfuncs(void)
 		}
 
 		for(p=pl->firstpc; p!=P; p=p->link) {
-		jackpot:
-			sf = 0;
-			s = p->from.sym;
-			while(s != S) {
-				sf = s->sym;
-				if(sf < 0 || sf >= NSYM)
-					sf = 0;
-				t = p->from.name;
-				if(t == D_ADDR)
-					t = p->from.name;
-				if(h[sf].type == t)
-				if(h[sf].sym == s)
-					break;
-				s->sym = sym;
-				zname(bout, s, t);
-				h[sym].sym = s;
-				h[sym].type = t;
-				sf = sym;
-				sym++;
-				if(sym >= NSYM)
-					sym = 1;
+			for(;;) {
+				sf = zsymaddr(&p->from, &new);
+				gf = zsym(p->from.gotype, D_EXTERN, &new);
+				if(new && sf == gf)
+					continue;
+				st = zsymaddr(&p->to, &new);
+				if(new && (st == sf || st == gf))
+					continue;
+				gt = zsym(p->to.gotype, D_EXTERN, &new);
+				if(new && (gt == sf || gt == gf || gt == st))
+					continue;
 				break;
 			}
-			st = 0;
-			s = p->to.sym;
-			while(s != S) {
-				st = s->sym;
-				if(st < 0 || st >= NSYM)
-					st = 0;
-				t = p->to.name;
-				if(t == D_ADDR)
-					t = p->to.name;
-				if(h[st].type == t)
-				if(h[st].sym == s)
-					break;
-				s->sym = sym;
-				zname(bout, s, t);
-				h[sym].sym = s;
-				h[sym].type = t;
-				st = sym;
-				sym++;
-				if(sym >= NSYM)
-					sym = 1;
-				if(st == sf)
-					goto jackpot;
-				break;
-			}
+
 			Bputc(bout, p->as);
 			Bputc(bout, p->scond);
  			Bputc(bout, p->reg);
@@ -263,8 +278,8 @@ dumpfuncs(void)
 			Bputc(bout, p->lineno>>8);
 			Bputc(bout, p->lineno>>16);
 			Bputc(bout, p->lineno>>24);
-			zaddr(bout, &p->from, sf);
-			zaddr(bout, &p->to, st);
+			zaddr(bout, &p->from, sf, gf);
+			zaddr(bout, &p->to, st, gt);
 		}
 	}
 }
@@ -288,7 +303,7 @@ dsname(Sym *sym, int off, char *t, int n)
 	p->to.name = D_NONE;
 	p->to.reg = NREG;
 	p->to.offset = 0;
-	memmove(p->to.sval, t, n);
+	memmove(p->to.u.sval, t, n);
 	return off + n;
 }
 
@@ -372,13 +387,13 @@ gdatacomplex(Node *nam, Mpcplx *cval)
 	p = gins(ADATA, nam, N);
 	p->reg = w;
 	p->to.type = D_FCONST;
-	p->to.dval = mpgetflt(&cval->real);
+	p->to.u.dval = mpgetflt(&cval->real);
 
 	p = gins(ADATA, nam, N);
 	p->reg = w;
 	p->from.offset += w;
 	p->to.type = D_FCONST;
-	p->to.dval = mpgetflt(&cval->imag);
+	p->to.u.dval = mpgetflt(&cval->imag);
 }
 
 void

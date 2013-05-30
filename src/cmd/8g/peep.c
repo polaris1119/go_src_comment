@@ -36,6 +36,7 @@
 #define	REGEXT	0
 
 static void	conprop(Reg *r);
+static void elimshortmov(Reg *r);
 
 // do we need the carry bit
 static int
@@ -45,9 +46,15 @@ needc(Prog *p)
 		switch(p->as) {
 		case AADCL:
 		case ASBBL:
+		case ARCRB:
+		case ARCRW:
 		case ARCRL:
 			return 1;
+		case AADDB:
+		case AADDW:
 		case AADDL:
+		case ASUBB:
+		case ASUBW:
 		case ASUBL:
 		case AJMP:
 		case ARET:
@@ -119,28 +126,14 @@ peep(void)
 		case AGLOBL:
 		case ANAME:
 		case ASIGNAME:
+		case ALOCALS:
+		case ATYPE:
 			p = p->link;
 		}
 	}
-	
-	// movb elimination.
-	// movb is simulated by the linker
-	// when a register other than ax, bx, cx, dx
-	// is used, so rewrite to other instructions
-	// when possible.  a movb into a register
-	// can smash the entire 32-bit register without
-	// causing any trouble.
-	for(r=firstr; r!=R; r=r->link) {
-		p = r->prog;
-		if(p->as == AMOVB && regtyp(&p->to)) {
-			// movb into register.
-			// from another register or constant can be movl.
-			if(regtyp(&p->from) || p->from.type == D_CONST)
-				p->as = AMOVL;
-			else
-				p->as = AMOVBLZX;
-		}
-	}
+
+	// byte, word arithmetic elimination.
+	elimshortmov(r);
 
 	// constant propagation
 	// find MOV $con,R followed by
@@ -158,6 +151,8 @@ peep(void)
 		case AMOVB:
 		case AMOVW:
 		case AMOVL:
+		case AMOVSS:
+		case AMOVSD:
 			if(regtyp(&p->to))
 			if(p->from.type == D_CONST)
 				conprop(r);
@@ -173,9 +168,9 @@ loop1:
 	for(r=firstr; r!=R; r=r->link) {
 		p = r->prog;
 		switch(p->as) {
-		case AMOVB:
-		case AMOVW:
 		case AMOVL:
+		case AMOVSS:
+		case AMOVSD:
 			if(regtyp(&p->to))
 			if(regtyp(&p->from)) {
 				if(copyprop(r)) {
@@ -205,7 +200,6 @@ loop1:
 			}
 			break;
 
-		case AADDB:
 		case AADDL:
 		case AADDW:
 			if(p->from.type != D_CONST || needc(p->link))
@@ -228,7 +222,6 @@ loop1:
 			}
 			break;
 
-		case ASUBB:
 		case ASUBL:
 		case ASUBW:
 			if(p->from.type != D_CONST || needc(p->link))
@@ -254,6 +247,19 @@ loop1:
 	}
 	if(t)
 		goto loop1;
+
+	// MOVSD removal.
+	// We never use packed registers, so a MOVSD between registers
+	// can be replaced by MOVAPD, which moves the pair of float64s
+	// instead of just the lower one.  We only use the lower one, but
+	// the processor can do better if we do moves using both.
+	for(r=firstr; r!=R; r=r->link) {
+		p = r->prog;
+		if(p->as == AMOVSD)
+		if(regtyp(&p->from))
+		if(regtyp(&p->to))
+			p->as = AMOVAPD;
+	}
 }
 
 void
@@ -312,7 +318,102 @@ regtyp(Adr *a)
 	t = a->type;
 	if(t >= D_AX && t <= D_DI)
 		return 1;
+	if(t >= D_X0 && t <= D_X7)
+		return 1;
 	return 0;
+}
+
+// movb elimination.
+// movb is simulated by the linker
+// when a register other than ax, bx, cx, dx
+// is used, so rewrite to other instructions
+// when possible.  a movb into a register
+// can smash the entire 64-bit register without
+// causing any trouble.
+static void
+elimshortmov(Reg *r)
+{
+	Prog *p;
+
+	for(r=firstr; r!=R; r=r->link) {
+		p = r->prog;
+		if(regtyp(&p->to)) {
+			switch(p->as) {
+			case AINCB:
+			case AINCW:
+				p->as = AINCL;
+				break;
+			case ADECB:
+			case ADECW:
+				p->as = ADECL;
+				break;
+			case ANEGB:
+			case ANEGW:
+				p->as = ANEGL;
+				break;
+			case ANOTB:
+			case ANOTW:
+				p->as = ANOTL;
+				break;
+			}
+			if(regtyp(&p->from) || p->from.type == D_CONST) {
+				// move or artihmetic into partial register.
+				// from another register or constant can be movl.
+				// we don't switch to 32-bit arithmetic if it can
+				// change how the carry bit is set (and the carry bit is needed).
+				switch(p->as) {
+				case AMOVB:
+				case AMOVW:
+					p->as = AMOVL;
+					break;
+				case AADDB:
+				case AADDW:
+					if(!needc(p->link))
+						p->as = AADDL;
+					break;
+				case ASUBB:
+				case ASUBW:
+					if(!needc(p->link))
+						p->as = ASUBL;
+					break;
+				case AMULB:
+				case AMULW:
+					p->as = AMULL;
+					break;
+				case AIMULB:
+				case AIMULW:
+					p->as = AIMULL;
+					break;
+				case AANDB:
+				case AANDW:
+					p->as = AANDL;
+					break;
+				case AORB:
+				case AORW:
+					p->as = AORL;
+					break;
+				case AXORB:
+				case AXORW:
+					p->as = AXORL;
+					break;
+				case ASHLB:
+				case ASHLW:
+					p->as = ASHLL;
+					break;
+				}
+			} else {
+				// explicit zero extension
+				switch(p->as) {
+				case AMOVB:
+					p->as = AMOVBLZX;
+					break;
+				case AMOVW:
+					p->as = AMOVWLZX;
+					break;
+				}
+			}
+		}
+	}
 }
 
 /*
@@ -357,17 +458,6 @@ subprop(Reg *r0)
 			if(p->to.type != D_NONE)
 				break;
 
-		case ADIVB:
-		case ADIVL:
-		case ADIVW:
-		case AIDIVB:
-		case AIDIVL:
-		case AIDIVW:
-		case AIMULB:
-		case AMULB:
-		case AMULL:
-		case AMULW:
-
 		case ARCLB:
 		case ARCLL:
 		case ARCLW:
@@ -392,6 +482,19 @@ subprop(Reg *r0)
 		case ASHRB:
 		case ASHRL:
 		case ASHRW:
+			if(p->from.type == D_CONST)
+				break;
+
+		case ADIVB:
+		case ADIVL:
+		case ADIVW:
+		case AIDIVB:
+		case AIDIVL:
+		case AIDIVW:
+		case AIMULB:
+		case AMULB:
+		case AMULL:
+		case AMULW:
 
 		case AREP:
 		case AREPN:
@@ -403,11 +506,16 @@ subprop(Reg *r0)
 		case ASTOSL:
 		case AMOVSB:
 		case AMOVSL:
+
+		case AFMOVF:
+		case AFMOVD:
+		case AFMOVFP:
+		case AFMOVDP:
 			return 0;
 
-		case AMOVB:
-		case AMOVW:
 		case AMOVL:
+		case AMOVSS:
+		case AMOVSD:
 			if(p->to.type == v1->type)
 				goto gotit;
 			break;
@@ -587,13 +695,22 @@ copyu(Prog *p, Adr *v, Adr *s)
 
 
 	case ANOP:	/* rhs store */
-	case AMOVB:
-	case AMOVW:
 	case AMOVL:
 	case AMOVBLSX:
 	case AMOVBLZX:
 	case AMOVWLSX:
 	case AMOVWLZX:
+	
+	case AMOVSS:
+	case AMOVSD:
+	case ACVTSD2SL:
+	case ACVTSD2SS:
+	case ACVTSL2SD:
+	case ACVTSL2SS:
+	case ACVTSS2SD:
+	case ACVTSS2SL:
+	case ACVTTSD2SL:
+	case ACVTTSS2SL:
 		if(copyas(&p->to, v)) {
 			if(s != A)
 				return copysub(&p->from, v, s, 1);
@@ -653,6 +770,28 @@ copyu(Prog *p, Adr *v, Adr *s)
 	case AXORB:
 	case AXORL:
 	case AXORW:
+	case AMOVB:
+	case AMOVW:
+
+	case AADDSD:
+	case AADDSS:
+	case ACMPSD:
+	case ACMPSS:
+	case ADIVSD:
+	case ADIVSS:
+	case AMAXSD:
+	case AMAXSS:
+	case AMINSD:
+	case AMINSS:
+	case AMULSD:
+	case AMULSS:
+	case ARCPSS:
+	case ARSQRTSS:
+	case ASQRTSD:
+	case ASQRTSS:
+	case ASUBSD:
+	case ASUBSS:
+	case AXORPD:
 		if(copyas(&p->to, v))
 			return 2;
 		goto caseread;
@@ -660,6 +799,11 @@ copyu(Prog *p, Adr *v, Adr *s)
 	case ACMPL:	/* read only */
 	case ACMPW:
 	case ACMPB:
+
+	case ACOMISD:
+	case ACOMISS:
+	case AUCOMISD:
+	case AUCOMISS:
 	caseread:
 		if(s != A) {
 			if(copysub(&p->from, v, s, 1))
@@ -744,8 +888,6 @@ copyu(Prog *p, Adr *v, Adr *s)
 		return 0;
 
 	case ARET:	/* funny */
-		if(v->type == REGRET || v->type == FREGRET)
-			return 2;
 		if(s != A)
 			return 1;
 		return 3;
@@ -754,6 +896,8 @@ copyu(Prog *p, Adr *v, Adr *s)
 		if(REGEXT && v->type <= REGEXT && v->type > exregoffset)
 			return 2;
 		if(REGARG >= 0 && v->type == (uchar)REGARG)
+			return 2;
+		if(v->type == p->from.type)
 			return 2;
 
 		if(s != A) {
@@ -820,7 +964,7 @@ copysub(Adr *a, Adr *v, Adr *s, int f)
 
 	if(copyas(a, v)) {
 		t = s->type;
-		if(t >= D_AX && t <= D_DI) {
+		if(t >= D_AX && t <= D_DI || t >= D_X0 && t <= D_X7) {
 			if(f)
 				a->type = t;
 		}
@@ -881,7 +1025,7 @@ loop:
 		if(p->from.node == p0->from.node)
 		if(p->from.offset == p0->from.offset)
 		if(p->from.scale == p0->from.scale)
-		if(p->from.dval == p0->from.dval)
+		if(p->from.u.vval == p0->from.u.vval)
 		if(p->from.index == p0->from.index) {
 			excise(r);
 			goto loop;

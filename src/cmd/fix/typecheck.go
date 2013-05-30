@@ -17,7 +17,7 @@ import (
 //
 // The fact that it is partial is very important: the input is
 // an AST and a description of some type information to
-// assume about one or more packages, but not all the 
+// assume about one or more packages, but not all the
 // packages that the program imports.  The checker is
 // expected to do as much as it can with what it has been
 // given.  There is not enough information supplied to do
@@ -395,9 +395,7 @@ func typecheck1(cfg *TypeConfig, f interface{}, typeof map[interface{}]string, a
 			// Field or method.
 			name := n.Sel.Name
 			if t := typeof[n.X]; t != "" {
-				if strings.HasPrefix(t, "*") {
-					t = t[1:] // implicit *
-				}
+				t = strings.TrimPrefix(t, "*") // implicit *
 				if typ := cfg.Type[t]; typ != nil {
 					if t := typ.dot(cfg, name); t != "" {
 						typeof[n] = t

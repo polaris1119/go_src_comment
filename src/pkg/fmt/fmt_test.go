@@ -9,7 +9,7 @@ import (
 	. "fmt"
 	"io"
 	"math"
-	"runtime" // for the malloc count test only
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -96,7 +96,7 @@ type SI struct {
 	I interface{}
 }
 
-// A type with a String method with pointer receiver for testing %p
+// P is a type with a String method with pointer receiver for testing %p.
 type P int
 
 var pValue P
@@ -104,6 +104,9 @@ var pValue P
 func (p *P) String() string {
 	return "String(p)"
 }
+
+var barray = [5]renamedUint8{1, 2, 3, 4, 5}
+var bslice = barray[:]
 
 var b byte
 
@@ -127,6 +130,10 @@ var fmttests = []struct {
 	{"%s", []byte("abc"), "abc"},
 	{"%x", []byte("abc"), "616263"},
 	{"% x", []byte("abc\xff"), "61 62 63 ff"},
+	{"%#x", []byte("abc\xff"), "0x610x620x630xff"},
+	{"%#X", []byte("abc\xff"), "0X610X620X630XFF"},
+	{"%# x", []byte("abc\xff"), "0x61 0x62 0x63 0xff"},
+	{"%# X", []byte("abc\xff"), "0X61 0X62 0X63 0XFF"},
 	{"% X", []byte("abc\xff"), "61 62 63 FF"},
 	{"%x", []byte("xyz"), "78797a"},
 	{"%X", []byte("xyz"), "78797A"},
@@ -172,6 +179,8 @@ var fmttests = []struct {
 	{"%.3q", "日本語日本語", `"日本語"`},
 	{"%.3q", []byte("日本語日本語"), `"日本語"`},
 	{"%10.1q", "日本語日本語", `       "日"`},
+	{"%10v", nil, "     <nil>"},
+	{"%-10v", nil, "<nil>     "},
 
 	// integers
 	{"%d", 12345, "12345"},
@@ -328,14 +337,18 @@ var fmttests = []struct {
 	// arrays
 	{"%v", array, "[1 2 3 4 5]"},
 	{"%v", iarray, "[1 hello 2.5 <nil>]"},
+	{"%v", barray, "[1 2 3 4 5]"},
 	{"%v", &array, "&[1 2 3 4 5]"},
 	{"%v", &iarray, "&[1 hello 2.5 <nil>]"},
+	{"%v", &barray, "&[1 2 3 4 5]"},
 
 	// slices
 	{"%v", slice, "[1 2 3 4 5]"},
 	{"%v", islice, "[1 hello 2.5 <nil>]"},
+	{"%v", bslice, "[1 2 3 4 5]"},
 	{"%v", &slice, "&[1 2 3 4 5]"},
 	{"%v", &islice, "&[1 hello 2.5 <nil>]"},
+	{"%v", &bslice, "&[1 2 3 4 5]"},
 
 	// complexes with %v
 	{"%v", 1 + 2i, "(1+2i)"},
@@ -350,10 +363,12 @@ var fmttests = []struct {
 	{"%+v", B{1, 2}, `{I:<1> j:2}`},
 	{"%+v", C{1, B{2, 3}}, `{i:1 B:{I:<2> j:3}}`},
 
-	// q on Stringable items
+	// other formats on Stringable items
 	{"%s", I(23), `<23>`},
 	{"%q", I(23), `"<23>"`},
 	{"%x", I(23), `3c32333e`},
+	{"%#x", I(23), `0x3c0x320x330x3e`},
+	{"%# x", I(23), `0x3c 0x32 0x33 0x3e`},
 	{"%d", I(23), `23`}, // Stringer applies only to string formats.
 
 	// go syntax
@@ -375,6 +390,9 @@ var fmttests = []struct {
 	{"%#v", &iarray, `&[4]interface {}{1, "hello", 2.5, interface {}(nil)}`},
 	{"%#v", map[int]byte(nil), `map[int]uint8(nil)`},
 	{"%#v", map[int]byte{}, `map[int]uint8{}`},
+	{"%#v", "foo", `"foo"`},
+	{"%#v", barray, `[5]fmt_test.renamedUint8{0x1, 0x2, 0x3, 0x4, 0x5}`},
+	{"%#v", bslice, `[]fmt_test.renamedUint8{0x1, 0x2, 0x3, 0x4, 0x5}`},
 
 	// slices with other formats
 	{"%#x", []int{1, 2, 15}, `[0x1 0x2 0xf]`},
@@ -400,6 +418,9 @@ var fmttests = []struct {
 	{"%x", renamedString("thing"), "7468696e67"},
 	{"%d", renamedBytes([]byte{1, 2, 15}), `[1 2 15]`},
 	{"%q", renamedBytes([]byte("hello")), `"hello"`},
+	{"%x", []renamedUint8{'a', 'b', 'c'}, "616263"},
+	{"%s", []renamedUint8{'h', 'e', 'l', 'l', 'o'}, "hello"},
+	{"%q", []renamedUint8{'h', 'e', 'l', 'l', 'o'}, `"hello"`},
 	{"%v", renamedFloat32(22), "22"},
 	{"%v", renamedFloat64(33), "33"},
 	{"%v", renamedComplex64(3 + 4i), "(3+4i)"},
@@ -419,6 +440,8 @@ var fmttests = []struct {
 	{"%T", renamedComplex128(4 - 3i), "fmt_test.renamedComplex128"},
 	{"%T", intVal, "int"},
 	{"%6T", &intVal, "  *int"},
+	{"%10T", nil, "     <nil>"},
+	{"%-10T", nil, "<nil>     "},
 
 	// %p
 	{"p0=%p", new(int), "p0=0xPTR"},
@@ -440,6 +463,11 @@ var fmttests = []struct {
 	// %v on pointers formats 0 as <nil>
 	{"%v", (*int)(nil), "<nil>"},
 	{"%v", new(int), "0xPTR"},
+
+	// %d etc. pointers use specified base.
+	{"%d", new(int), "PTR_d"},
+	{"%o", new(int), "PTR_o"},
+	{"%x", new(int), "PTR_x"},
 
 	// %d on Stringer should give integer if possible
 	{"%s", time.Time{}.Month(), "January"},
@@ -464,20 +492,40 @@ var fmttests = []struct {
 
 	// Used to crash because nByte didn't allow for a sign.
 	{"%b", int64(-1 << 63), "-1000000000000000000000000000000000000000000000000000000000000000"},
+
+	// Complex fmt used to leave the plus flag set for future entries in the array
+	// causing +2+0i and +3+0i instead of 2+0i and 3+0i.
+	{"%v", []complex64{1, 2, 3}, "[(1+0i) (2+0i) (3+0i)]"},
+	{"%v", []complex128{1, 2, 3}, "[(1+0i) (2+0i) (3+0i)]"},
+
+	// Incomplete format specification caused crash.
+	{"%.", 3, "%!.(int=3)"},
 }
 
 func TestSprintf(t *testing.T) {
 	for _, tt := range fmttests {
 		s := Sprintf(tt.fmt, tt.val)
 		if i := strings.Index(tt.out, "PTR"); i >= 0 {
+			pattern := "PTR"
+			chars := "0123456789abcdefABCDEF"
+			switch {
+			case strings.HasPrefix(tt.out[i:], "PTR_d"):
+				pattern = "PTR_d"
+				chars = chars[:10]
+			case strings.HasPrefix(tt.out[i:], "PTR_o"):
+				pattern = "PTR_o"
+				chars = chars[:8]
+			case strings.HasPrefix(tt.out[i:], "PTR_x"):
+				pattern = "PTR_x"
+			}
 			j := i
 			for ; j < len(s); j++ {
 				c := s[j]
-				if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				if !strings.ContainsRune(chars, rune(c)) {
 					break
 				}
 			}
-			s = s[0:i] + "PTR" + s[j:]
+			s = s[0:i] + pattern + s[j:]
 		}
 		if s != tt.out {
 			if _, ok := tt.val.(string); ok {
@@ -527,6 +575,14 @@ func BenchmarkSprintfFloat(b *testing.B) {
 	}
 }
 
+func BenchmarkManyArgs(b *testing.B) {
+	var buf bytes.Buffer
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		Fprintf(&buf, "%2d/%2d/%2d %d:%d:%d %s %s\n", 3, 4, 5, 11, 12, 13, "hello", "world")
+	}
+}
+
 var mallocBuf bytes.Buffer
 
 var mallocTest = []struct {
@@ -549,18 +605,13 @@ var mallocTest = []struct {
 var _ bytes.Buffer
 
 func TestCountMallocs(t *testing.T) {
+	if runtime.GOMAXPROCS(0) > 1 {
+		t.Skip("skipping; GOMAXPROCS>1")
+	}
 	for _, mt := range mallocTest {
-		const N = 100
-		memstats := new(runtime.MemStats)
-		runtime.ReadMemStats(memstats)
-		mallocs := 0 - memstats.Mallocs
-		for i := 0; i < N; i++ {
-			mt.fn()
-		}
-		runtime.ReadMemStats(memstats)
-		mallocs += memstats.Mallocs
-		if mallocs/N > uint64(mt.count) {
-			t.Errorf("%s: expected %d mallocs, got %d", mt.desc, mt.count, mallocs/N)
+		mallocs := testing.AllocsPerRun(100, mt.fn)
+		if got, max := mallocs, float64(mt.count); got > max {
+			t.Errorf("%s: got %v allocs, want <=%v", mt.desc, got, max)
 		}
 	}
 }
@@ -636,7 +687,8 @@ func TestStructPrinter(t *testing.T) {
 	}
 }
 
-// Check map printing using substrings so we don't depend on the print order.
+// presentInMap checks map printing using substrings so we don't depend on the
+// print order.
 func presentInMap(s string, a []string, t *testing.T) {
 	for i := 0; i < len(a); i++ {
 		loc := strings.Index(s, a[i])
@@ -677,8 +729,8 @@ func TestEmptyMap(t *testing.T) {
 	}
 }
 
-// Check that Sprint (and hence Print, Fprint) puts spaces in the right places,
-// that is, between arg pairs in which neither is a string.
+// TestBlank checks that Sprint (and hence Print, Fprint) puts spaces in the
+// right places, that is, between arg pairs in which neither is a string.
 func TestBlank(t *testing.T) {
 	got := Sprint("<", 1, ">:", 1, 2, 3, "!")
 	expect := "<1>:1 2 3!"
@@ -687,8 +739,8 @@ func TestBlank(t *testing.T) {
 	}
 }
 
-// Check that Sprintln (and hence Println, Fprintln) puts spaces in the right places,
-// that is, between all arg pairs.
+// TestBlankln checks that Sprintln (and hence Println, Fprintln) puts spaces in
+// the right places, that is, between all arg pairs.
 func TestBlankln(t *testing.T) {
 	got := Sprintln("<", 1, ">:", 1, 2, 3, "!")
 	expect := "< 1 >: 1 2 3 !\n"
@@ -697,7 +749,7 @@ func TestBlankln(t *testing.T) {
 	}
 }
 
-// Check Formatter with Sprint, Sprintln, Sprintf
+// TestFormatterPrintln checks Formatter with Sprint, Sprintln, Sprintf.
 func TestFormatterPrintln(t *testing.T) {
 	f := F(1)
 	expect := "<v=F(1)>\n"
@@ -746,7 +798,7 @@ func TestWidthAndPrecision(t *testing.T) {
 	}
 }
 
-// A type that panics in String.
+// Panic is a type that panics in String.
 type Panic struct {
 	message interface{}
 }
@@ -761,7 +813,7 @@ func (p Panic) String() string {
 	panic(p.message)
 }
 
-// A type that panics in Format.
+// PanicF is a type that panics in Format.
 type PanicF struct {
 	message interface{}
 }
@@ -799,7 +851,7 @@ func TestPanics(t *testing.T) {
 	}
 }
 
-// Test that erroneous String routine doesn't cause fatal recursion.
+// recurCount tests that erroneous String routine doesn't cause fatal recursion.
 var recurCount = 0
 
 type Recur struct {

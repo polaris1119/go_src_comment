@@ -49,6 +49,10 @@ func (p *Package) LastCommit(c appengine.Context) (*Commit, error) {
 		Order("-Time").
 		Limit(1).
 		GetAll(c, &commits)
+	if _, ok := err.(*datastore.ErrFieldMismatch); ok {
+		// Some fields have been removed, so it's okay to ignore this error.
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +68,10 @@ func GetPackage(c appengine.Context, path string) (*Package, error) {
 	err := datastore.Get(c, p.Key(c), p)
 	if err == datastore.ErrNoSuchEntity {
 		return nil, fmt.Errorf("package %q not found", path)
+	}
+	if _, ok := err.(*datastore.ErrFieldMismatch); ok {
+		// Some fields have been removed, so it's okay to ignore this error.
+		err = nil
 	}
 	return p, err
 }
@@ -111,17 +119,33 @@ func (c *Commit) Valid() error {
 	return nil
 }
 
+// each result line is approx 105 bytes. This constant is a tradeoff between
+// build history and the AppEngine datastore limit of 1mb.
+const maxResults = 1000
+
 // AddResult adds the denormalized Reuslt data to the Commit's Result field.
 // It must be called from inside a datastore transaction.
 func (com *Commit) AddResult(c appengine.Context, r *Result) error {
 	if err := datastore.Get(c, com.Key(c), com); err != nil {
 		return fmt.Errorf("getting Commit: %v", err)
 	}
-	com.ResultData = append(com.ResultData, r.Data())
+	com.ResultData = trim(append(com.ResultData, r.Data()), maxResults)
 	if _, err := datastore.Put(c, com.Key(c), com); err != nil {
 		return fmt.Errorf("putting Commit: %v", err)
 	}
 	return nil
+}
+
+func trim(s []string, n int) []string {
+	l := min(len(s), n)
+	return s[len(s)-l:]
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Result returns the build Result for this Commit for the given builder/goHash.
@@ -160,20 +184,11 @@ func partsToHash(c *Commit, p []string) *Result {
 	}
 }
 
-// OK returns the Commit's build state for a specific builder and goHash.
-func (c *Commit) OK(builder, goHash string) (ok, present bool) {
-	r := c.Result(builder, goHash)
-	if r == nil {
-		return false, false
-	}
-	return r.OK, true
-}
-
 // A Result describes a build result for a Commit on an OS/architecture.
 //
 // Each Result entity is a descendant of its associated Commit entity.
 type Result struct {
-	Builder     string // "arch-os[-note]"
+	Builder     string // "os-arch[-note]"
 	Hash        string
 	PackagePath string // (empty for Go commits)
 
@@ -184,7 +199,7 @@ type Result struct {
 	Log     string `datastore:"-"`        // for JSON unmarshaling only
 	LogHash string `datastore:",noindex"` // Key to the Log record.
 
-	RunTime int64 // time to build+test in nanoseconds 
+	RunTime int64 // time to build+test in nanoseconds
 }
 
 func (r *Result) Key(c appengine.Context) *datastore.Key {
@@ -297,7 +312,12 @@ func Packages(c appengine.Context, kind string) ([]*Package, error) {
 	q := datastore.NewQuery("Package").Filter("Kind=", kind)
 	for t := q.Run(c); ; {
 		pkg := new(Package)
-		if _, err := t.Next(pkg); err == datastore.Done {
+		_, err := t.Next(pkg)
+		if _, ok := err.(*datastore.ErrFieldMismatch); ok {
+			// Some fields have been removed, so it's okay to ignore this error.
+			err = nil
+		}
+		if err == datastore.Done {
 			break
 		} else if err != nil {
 			return nil, err

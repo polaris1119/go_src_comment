@@ -32,10 +32,42 @@
 
 #include	"l.h"
 #include	"../ld/lib.h"
+#include	"../ld/elf.h"
 
 static int	rexflag;
 static int	asmode;
 static vlong	vaddr(Adr*, Reloc*);
+
+// single-instruction no-ops of various lengths.
+// constructed by hand and disassembled with gdb to verify.
+// see http://www.agner.org/optimize/optimizing_assembly.pdf for discussion.
+static uchar nop[][16] = {
+	{0x90},
+	{0x66, 0x90},
+	{0x0F, 0x1F, 0x00},
+	{0x0F, 0x1F, 0x40, 0x00},
+	{0x0F, 0x1F, 0x44, 0x00, 0x00},
+	{0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00},
+	{0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00},
+	{0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+	{0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+	{0x66, 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+};
+
+static void
+fillnop(uchar *p, int n)
+{
+	int m;
+
+	while(n > 0) {
+		m = n;
+		if(m > nelem(nop))
+			m = nelem(nop);
+		memmove(p, nop[m-1], m);
+		p += m;
+		n -= m;
+	}
+}
 
 void
 span1(Sym *s)
@@ -52,8 +84,10 @@ span1(Sym *s)
 
 	for(p = s->text; p != P; p = p->link) {
 		p->back = 2;	// use short branches first time through
-		if((q = p->pcond) != P && (q->back & 2))
+		if((q = p->pcond) != P && (q->back & 2)) {
 			p->back |= 1;	// backward jump
+			q->back |= 4;   // loop head
+		}
 
 		if(p->as == AADJSP) {
 			p->to.type = D_SP;
@@ -78,6 +112,16 @@ span1(Sym *s)
 		s->np = 0;
 		c = 0;
 		for(p = s->text; p != P; p = p->link) {
+			if((p->back & 4) && (c&(LoopAlign-1)) != 0) {
+				// pad with NOPs
+				v = -c&(LoopAlign-1);
+				if(v <= MaxLoopPad) {
+					symgrow(s, c+v);
+					fillnop(s->p+c, v);
+					c += v;
+				}
+			}
+
 			p->pc = c;
 
 			// process forward jumps to p
@@ -329,7 +373,10 @@ oclass(Adr *a)
 				switch(a->index) {
 				case D_EXTERN:
 				case D_STATIC:
-					return Yi32;	/* TO DO: Yi64 */
+					if(flag_shared)
+						return Yiauto;
+					else
+						return Yi32;	/* TO DO: Yi64 */
 				case D_AUTO:
 				case D_PARAM:
 					return Yiauto;
@@ -688,7 +735,10 @@ vaddr(Adr *a, Reloc *r)
 			diag("need reloc for %D", a);
 			errorexit();
 		}
-		r->type = D_ADDR;
+		if(flag_shared)
+			r->type = D_PCREL;
+		else
+			r->type = D_ADDR;
 		r->siz = 4;	// TODO: 8 for external symbols
 		r->off = -1;	// caller must fill in
 		r->sym = s;
@@ -717,6 +767,8 @@ asmandsz(Adr *a, int r, int rex, int m64)
 				goto bad;
 			case D_STATIC:
 			case D_EXTERN:
+				if(flag_shared)
+					goto bad;
 				t = D_NONE;
 				v = vaddr(a, &rel);
 				break;
@@ -777,7 +829,7 @@ asmandsz(Adr *a, int r, int rex, int m64)
 
 	rexflag |= (regrex[t] & Rxb) | rex;
 	if(t == D_NONE || (D_CS <= t && t <= D_GS)) {
-		if(asmode != 64){
+		if(flag_shared && t == D_NONE && (a->type == D_STATIC || a->type == D_EXTERN) || asmode != 64) {
 			*andptr++ = (0 << 6) | (5 << 0) | (r << 3);
 			goto putrelv;
 		}
@@ -829,7 +881,30 @@ putrelv:
 		r = addrel(cursym);
 		*r = rel;
 		r->off = curp->pc + andptr - and;
+	} else if(iself && linkmode == LinkExternal && a->type == D_INDIR+D_FS
+		&& HEADTYPE != Hopenbsd) {
+		Reloc *r;
+		Sym *s;
+		
+		r = addrel(cursym);
+		r->off = curp->pc + andptr - and;
+		r->add = 0;
+		r->xadd = 0;
+		r->siz = 4;
+		r->type = D_TLS;
+		if(a->offset == tlsoffset+0)
+			s = lookup("runtime.g", 0);
+		else
+			s = lookup("runtime.m", 0);
+		s->type = STLSBSS;
+		s->reachable = 1;
+		s->size = PtrSize;
+		s->hide = 1;
+		r->sym = s;
+		r->xsym = s;
+		v = 0;
 	}
+		
 	put4(v);
 	return;
 
@@ -1110,6 +1185,11 @@ found:
 		*andptr++ = Pe;
 		*andptr++ = Pm;
 		break;
+	case Pq3:	/* 16 bit escape, Rex.w, and opcode escape */
+		*andptr++ = Pe;
+		*andptr++ = Pw;
+		*andptr++ = Pm;
+		break;
 
 	case Pf2:	/* xmm opcode escape */
 	case Pf3:
@@ -1178,6 +1258,11 @@ found:
 		*andptr++ = op;
 		asmand(&p->from, &p->to);
 		break;
+	case Zm2_r:
+		*andptr++ = op;
+		*andptr++ = o->op[z+1];
+		asmand(&p->from, &p->to);
+		break;
 
 	case Zm_r_xm:
 		mediaop(o, op, t[3], z);
@@ -1204,7 +1289,8 @@ found:
 		break;
 
 	case Zibm_r:
-		*andptr++ = op;
+		while ((op = o->op[z++]) != 0)
+			*andptr++ = op;
 		asmand(&p->from, &p->to);
 		*andptr++ = p->to.offset;
 		break;
@@ -1574,7 +1660,9 @@ bad:
 		pp = *p;
 		z = p->from.type;
 		if(z >= D_BP && z <= D_DI) {
-			if(isax(&p->to)) {
+			if(isax(&p->to) || p->to.type == D_NONE) {
+				// We certainly don't want to exchange
+				// with AX if the op is MUL or DIV.
 				*andptr++ = 0x87;			/* xchg lhs,bx */
 				asmando(&p->from, reg[D_BX]);
 				subreg(&pp, z, D_BX);
@@ -1730,13 +1818,17 @@ asmins(Prog *p)
 			if(c != 0xf2 && c != 0xf3 && (c < 0x64 || c > 0x67) && c != 0x2e && c != 0x3e && c != 0x26)
 				break;
 		}
-		for(r=cursym->r+cursym->nr; r-- > cursym->r; ) {
-			if(r->off < p->pc)
-				break;
-			r->off++;
-		}
 		memmove(and+np+1, and+np, n-np);
 		and[np] = 0x40 | rexflag;
 		andptr++;
+	}
+	n = andptr - and;
+	for(r=cursym->r+cursym->nr; r-- > cursym->r; ) {
+		if(r->off < p->pc)
+			break;
+		if(rexflag)
+			r->off++;
+		if(r->type == D_PCREL)
+			r->add -= p->pc + n - (r->off + r->siz);
 	}
 }

@@ -63,7 +63,7 @@ func Dup(oldfd int, newfd int) (fd int, err error) {
 
 func Open(path string, mode int) (fd int, err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(path)
+	_p0, err = BytePtrFromString(path)
 	if err != nil {
 		return
 	}
@@ -79,7 +79,7 @@ func Open(path string, mode int) (fd int, err error) {
 
 func Create(path string, mode int, perm uint32) (fd int, err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(path)
+	_p0, err = BytePtrFromString(path)
 	if err != nil {
 		return
 	}
@@ -95,7 +95,7 @@ func Create(path string, mode int, perm uint32) (fd int, err error) {
 
 func Remove(path string) (err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(path)
+	_p0, err = BytePtrFromString(path)
 	if err != nil {
 		return
 	}
@@ -154,7 +154,7 @@ func Close(fd int) (err error) {
 
 func Chdir(path string) (err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(path)
+	_p0, err = BytePtrFromString(path)
 	if err != nil {
 		return
 	}
@@ -169,12 +169,12 @@ func Chdir(path string) (err error) {
 
 func Bind(name string, old string, flag int) (err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(name)
+	_p0, err = BytePtrFromString(name)
 	if err != nil {
 		return
 	}
 	var _p1 *byte
-	_p1, err = bytePtrFromString(old)
+	_p1, err = BytePtrFromString(old)
 	if err != nil {
 		return
 	}
@@ -189,12 +189,12 @@ func Bind(name string, old string, flag int) (err error) {
 
 func Mount(fd int, afd int, old string, flag int, aname string) (err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(old)
+	_p0, err = BytePtrFromString(old)
 	if err != nil {
 		return
 	}
 	var _p1 *byte
-	_p1, err = bytePtrFromString(aname)
+	_p1, err = BytePtrFromString(aname)
 	if err != nil {
 		return
 	}
@@ -209,7 +209,7 @@ func Mount(fd int, afd int, old string, flag int, aname string) (err error) {
 
 func Stat(path string, edir []byte) (n int, err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(path)
+	_p0, err = BytePtrFromString(path)
 	if err != nil {
 		return
 	}
@@ -248,7 +248,7 @@ func Fstat(fd int, edir []byte) (n int, err error) {
 
 func Wstat(path string, edir []byte) (err error) {
 	var _p0 *byte
-	_p0, err = bytePtrFromString(path)
+	_p0, err = BytePtrFromString(path)
 	if err != nil {
 		return
 	}

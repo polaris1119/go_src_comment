@@ -1,9 +1,13 @@
 Vim plugins for Go (http://golang.org)
 ======================================
 
-To use all the Vim plugins, add these lines to your vimrc.
+To use all the Vim plugins, add these lines to your $HOME/.vimrc.
 
-  set rtp+=$GOROOT/misc/vim
+  " Some Linux distributions set filetype in /etc/vimrc.
+  " Clear filetype flags before changing runtimepath to force Vim to reload them.
+  filetype off
+  filetype plugin indent off
+  set runtimepath+=$GOROOT/misc/vim
   filetype plugin indent on
   syntax on
 
@@ -72,5 +76,4 @@ To install godoc plugin:
   1. Same as 1 above.
   2. Copy or link plugin/godoc.vim to $HOME/.vim/plugin/godoc,
      syntax/godoc.vim to $HOME/.vim/syntax/godoc.vim,
-     ftplugin/go/godoc.vim to $HOME/.vim/ftplugin/go/godoc.vim.
      and autoload/go/complete.vim to $HOME/.vim/autoload/go/complete.vim.

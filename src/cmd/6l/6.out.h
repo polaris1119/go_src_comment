@@ -654,6 +654,8 @@ enum	as
 	APFSUB,
 	APFSUBR,
 	APINSRW,
+	APINSRD,
+	APINSRQ,
 	APMADDWL,
 	APMAXSW,
 	APMAXUB,
@@ -671,6 +673,7 @@ enum	as
 	APSHUFL,
 	APSHUFLW,
 	APSHUFW,
+	APSHUFB,
 	APSLLO,
 	APSLLL,
 	APSLLQ,
@@ -736,6 +739,30 @@ enum	as
 	ACRC32B,
 	ACRC32Q,
 	AIMUL3Q,
+	
+	APREFETCHT0,
+	APREFETCHT1,
+	APREFETCHT2,
+	APREFETCHNTA,
+	
+	AMOVQL,
+	ABSWAPL,
+	ABSWAPQ,
+	
+	AUNDEF,
+
+	AAESENC,
+	AAESENCLAST,
+	AAESDEC,
+	AAESDECLAST,
+	AAESIMC,
+	AAESKEYGENASSIST,
+
+	APSHUFD,
+	
+	AUSEFIELD,
+	ALOCALS,
+	ATYPE,
 
 	ALAST
 };
@@ -794,6 +821,14 @@ enum
 	D_X5,
 	D_X6,
 	D_X7,
+	D_X8,
+	D_X9,
+	D_X10,
+	D_X11,
+	D_X12,
+	D_X13,
+	D_X14,
+	D_X15,
 
 	D_CS		= 68,
 	D_SS,
@@ -831,6 +866,7 @@ enum
 
 	D_SIZE = D_INDIR + D_INDIR,	/* 6l internal */
 	D_PCREL,
+	D_TLS,
 
 	T_TYPE		= 1<<0,
 	T_INDEX		= 1<<1,
@@ -854,7 +890,7 @@ enum
 /*
  * this is the ranlib header
  */
-#define	SYMDEF	"__.SYMDEF"
+#define	SYMDEF	"__.GOSYMDEF"
 
 /*
  * this is the simulated IEEE floating point

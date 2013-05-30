@@ -127,3 +127,27 @@ func (s Signal) String() string {
 	}
 	return "signal " + itoa(int(s))
 }
+
+func Read(fd int, p []byte) (n int, err error) {
+	n, err = read(fd, p)
+	if raceenabled && err == nil {
+		raceAcquire(unsafe.Pointer(&ioSync))
+	}
+	return
+}
+
+func Write(fd int, p []byte) (n int, err error) {
+	if raceenabled {
+		raceReleaseMerge(unsafe.Pointer(&ioSync))
+	}
+	return write(fd, p)
+}
+
+func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
+	if raceenabled {
+		raceReleaseMerge(unsafe.Pointer(&ioSync))
+	}
+	return sendfile(outfd, infd, offset, count)
+}
+
+var ioSync int64

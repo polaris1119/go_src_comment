@@ -260,11 +260,12 @@ type FdSet struct {
 }
 
 const (
-	SizeofIfMsghdr  = 0xe4
-	SizeofIfData    = 0xcc
-	SizeofIfaMsghdr = 0x18
-	SizeofRtMsghdr  = 0x58
-	SizeofRtMetrics = 0x30
+	SizeofIfMsghdr         = 0xe8
+	SizeofIfData           = 0xd0
+	SizeofIfaMsghdr        = 0x18
+	SizeofIfAnnounceMsghdr = 0x1a
+	SizeofRtMsghdr         = 0x58
+	SizeofRtMetrics        = 0x30
 )
 
 type IfMsghdr struct {
@@ -283,27 +284,28 @@ type IfMsghdr struct {
 }
 
 type IfData struct {
-	Type       uint8
-	Addrlen    uint8
-	Hdrlen     uint8
-	Link_state uint8
-	Mtu        uint32
-	Metric     uint32
-	Pad        uint32
-	Baudrate   uint64
-	Ipackets   uint64
-	Ierrors    uint64
-	Opackets   uint64
-	Oerrors    uint64
-	Collisions uint64
-	Ibytes     uint64
-	Obytes     uint64
-	Imcasts    uint64
-	Omcasts    uint64
-	Iqdrops    uint64
-	Noproto    uint64
-	Lastchange Timeval
-	Mclpool    [7]Mclpool
+	Type         uint8
+	Addrlen      uint8
+	Hdrlen       uint8
+	Link_state   uint8
+	Mtu          uint32
+	Metric       uint32
+	Pad          uint32
+	Baudrate     uint64
+	Ipackets     uint64
+	Ierrors      uint64
+	Opackets     uint64
+	Oerrors      uint64
+	Collisions   uint64
+	Ibytes       uint64
+	Obytes       uint64
+	Imcasts      uint64
+	Omcasts      uint64
+	Iqdrops      uint64
+	Noproto      uint64
+	Capabilities uint32
+	Lastchange   Timeval
+	Mclpool      [7]Mclpool
 }
 
 type IfaMsghdr struct {
@@ -318,6 +320,16 @@ type IfaMsghdr struct {
 	Addrs   int32
 	Flags   int32
 	Metric  int32
+}
+
+type IfAnnounceMsghdr struct {
+	Msglen  uint16
+	Version uint8
+	Type    uint8
+	Hdrlen  uint16
+	Index   uint16
+	What    uint16
+	Name    [16]int8
 }
 
 type RtMsghdr struct {

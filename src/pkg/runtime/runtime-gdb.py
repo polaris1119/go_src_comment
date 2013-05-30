@@ -84,26 +84,35 @@ class MapTypePrinter:
 		return str(self.val.type)
 
 	def children(self):
-		stab = self.val['st']
-		i = 0
-		for v in self.traverse_hash(stab):
-			yield ("[%d]" % i, v['key'])
-			yield ("[%d]" % (i + 1), v['val'])
-			i += 2
-
-	def traverse_hash(self, stab):
-		ptr = stab['entry'].address
-		last = stab['last']
-		while ptr <= last:
-			v = ptr.dereference()
-			ptr = ptr + 1
-			if v['hash'] == 0: continue
-			if v['hash'] & 63 == 63:   # subtable
-				for v in self.traverse_hash(v['key'].cast(self.val['st'].type)):
-					yield v
-			else:
-				yield v
-
+		B = self.val['b']
+		buckets = self.val['buckets']
+		oldbuckets = self.val['oldbuckets']
+		flags = self.val['flags']
+		inttype = self.val['hash0'].type
+		cnt = 0
+		for bucket in xrange(2 ** B):
+			bp = buckets + bucket
+			if oldbuckets:
+				oldbucket = bucket & (2 ** (B - 1) - 1)
+				oldbp = oldbuckets + oldbucket
+				oldb = oldbp.dereference()
+				if (oldb['overflow'].cast(inttype) & 1) == 0: # old bucket not evacuated yet
+					if bucket >= 2 ** (B - 1): continue   # already did old bucket
+					bp = oldbp
+			while bp:
+				b = bp.dereference()
+				for i in xrange(8):
+					if b['tophash'][i] != 0:
+						k = b['keys'][i]
+						v = b['values'][i]
+						if flags & 1:
+							k = k.dereference()
+						if flags & 2:
+							v = v.dereference()
+						yield '%d' % cnt, k
+						yield '%d' % (cnt + 1), v
+						cnt += 2
+				bp = b['overflow']
 
 class ChanTypePrinter:
 	"""Pretty print chan[T] types.
@@ -149,8 +158,8 @@ goobjfile.pretty_printers.extend([makematcher(k) for k in vars().values() if has
 
 #
 #  For reference, this is what we're trying to do:
-#  eface: p *(*(struct 'runtime.commonType'*)'main.e'->type_->data)->string
-#  iface: p *(*(struct 'runtime.commonType'*)'main.s'->tab->Type->data)->string
+#  eface: p *(*(struct 'runtime.rtype'*)'main.e'->type_->data)->string
+#  iface: p *(*(struct 'runtime.rtype'*)'main.s'->tab->Type->data)->string
 #
 # interface types can't be recognized by their name, instead we check
 # if they have the expected fields.  Unfortunately the mapping of
@@ -186,8 +195,7 @@ def lookup_type(name):
 	except:
 		pass
 
-_rctp_type = gdb.lookup_type("struct runtime.commonType").pointer()
-_rtp_type = gdb.lookup_type("struct runtime._type").pointer()
+_rctp_type = gdb.lookup_type("struct runtime.rtype").pointer()
 
 def iface_commontype(obj):
 	if is_iface(obj):
@@ -196,18 +204,13 @@ def iface_commontype(obj):
 		go_type_ptr = obj['_type']
 	else:
 		return
-
-	# sanity check: reflection type description ends in a loop.
-	tt = go_type_ptr['_type'].cast(_rtp_type).dereference()['_type']
-	if tt != tt.cast(_rtp_type).dereference()['_type']:
-		return
 	
-	return go_type_ptr['ptr'].cast(_rctp_type).dereference()
+	return go_type_ptr.cast(_rctp_type).dereference()
 	
 
 def iface_dtype(obj):
 	"Decode type of the data field of an eface or iface struct."
-	# known issue: dtype_name decoded from runtime.commonType is "nested.Foo"
+	# known issue: dtype_name decoded from runtime.rtype is "nested.Foo"
 	# but the dwarf table lists it as "full/path/to/nested.Foo"
 
 	dynamic_go_type = iface_commontype(obj)
@@ -381,6 +384,7 @@ class GoroutineCmd(gdb.Command):
 
 	def invoke(self, arg, from_tty):
 		goid, cmd = arg.split(None, 1)
+		goid = gdb.parse_and_eval(goid)
 		pc, sp = find_goroutine(int(goid))
 		if not pc:
 			print "No such goroutine: ", goid

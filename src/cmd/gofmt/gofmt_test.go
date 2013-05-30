@@ -56,31 +56,40 @@ func runTest(t *testing.T, in, out, flags string) {
 		return
 	}
 
-	if got := buf.Bytes(); bytes.Compare(got, expected) != 0 {
+	if got := buf.Bytes(); !bytes.Equal(got, expected) {
 		t.Errorf("(gofmt %s) != %s (see %s.gofmt)", in, out, in)
 		d, err := diff(expected, got)
 		if err == nil {
 			t.Errorf("%s", d)
 		}
-		ioutil.WriteFile(in+".gofmt", got, 0666)
+		if err := ioutil.WriteFile(in+".gofmt", got, 0666); err != nil {
+			t.Error(err)
+		}
 	}
 }
 
-// TODO(gri) Add more test cases!
 var tests = []struct {
 	in, flags string
 }{
 	{"gofmt.go", ""},
 	{"gofmt_test.go", ""},
 	{"testdata/composites.input", "-s"},
+	{"testdata/slices1.input", "-s"},
+	{"testdata/slices2.input", "-s"},
 	{"testdata/old.input", ""},
 	{"testdata/rewrite1.input", "-r=Foo->Bar"},
 	{"testdata/rewrite2.input", "-r=int->bool"},
 	{"testdata/rewrite3.input", "-r=x->x"},
 	{"testdata/rewrite4.input", "-r=(x)->x"},
+	{"testdata/rewrite5.input", "-r=x+x->2*x"},
+	{"testdata/rewrite6.input", "-r=fun(x)->Fun(x)"},
+	{"testdata/rewrite7.input", "-r=fun(x...)->Fun(x)"},
+	{"testdata/rewrite8.input", "-r=interface{}->int"},
 	{"testdata/stdin*.input", "-stdin"},
 	{"testdata/comments.input", ""},
 	{"testdata/import.input", ""},
+	{"testdata/crlf.input", ""},       // test case for issue 3961; see also TestCRLF
+	{"testdata/typeswitch.input", ""}, // test case for issue 4470
 }
 
 func TestRewrite(t *testing.T) {
@@ -101,5 +110,26 @@ func TestRewrite(t *testing.T) {
 				runTest(t, out, out, test.flags)
 			}
 		}
+	}
+}
+
+func TestCRLF(t *testing.T) {
+	const input = "testdata/crlf.input"   // must contain CR/LF's
+	const golden = "testdata/crlf.golden" // must not contain any CR's
+
+	data, err := ioutil.ReadFile(input)
+	if err != nil {
+		t.Error(err)
+	}
+	if bytes.Index(data, []byte("\r\n")) < 0 {
+		t.Errorf("%s contains no CR/LF's", input)
+	}
+
+	data, err = ioutil.ReadFile(golden)
+	if err != nil {
+		t.Error(err)
+	}
+	if bytes.Index(data, []byte("\r")) >= 0 {
+		t.Errorf("%s contains CR's", golden)
 	}
 }

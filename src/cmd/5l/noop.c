@@ -45,6 +45,20 @@ static	Sym*	sym_divu;
 static	Sym*	sym_mod;
 static	Sym*	sym_modu;
 
+static void
+linkcase(Prog *casep)
+{
+	Prog *p;
+
+	for(p = casep; p != P; p = p->link){
+		if(p->as == ABCASE) {
+			for(; p != P && p->as == ABCASE; p = p->link)
+				p->pcrel = casep;
+			break;
+		}
+	}
+}
+
 void
 noops(void)
 {
@@ -76,6 +90,11 @@ noops(void)
 	for(cursym = textp; cursym != nil; cursym = cursym->next) {
 		for(p = cursym->text; p != P; p = p->link) {
 			switch(p->as) {
+			case ACASE:
+				if(flag_shared)
+					linkcase(p);
+				break;
+
 			case ATEXT:
 				p->mark |= LEAF;
 				break;
@@ -365,11 +384,7 @@ noops(void)
 				q1 = p;
 	
 				/* MOV a,4(SP) */
-				q = prg();
-				q->link = p->link;
-				p->link = q;
-				p = q;
-	
+				p = appendp(p);
 				p->as = AMOVW;
 				p->line = q1->line;
 				p->from.type = D_REG;
@@ -379,11 +394,7 @@ noops(void)
 				p->to.offset = 4;
 	
 				/* MOV b,REGTMP */
-				q = prg();
-				q->link = p->link;
-				p->link = q;
-				p = q;
-	
+				p = appendp(p);
 				p->as = AMOVW;
 				p->line = q1->line;
 				p->from.type = D_REG;
@@ -395,11 +406,7 @@ noops(void)
 				p->to.offset = 0;
 	
 				/* CALL appropriate */
-				q = prg();
-				q->link = p->link;
-				p->link = q;
-				p = q;
-	
+				p = appendp(p);
 				p->as = ABL;
 				p->line = q1->line;
 				p->to.type = D_BRANCH;
@@ -424,11 +431,7 @@ noops(void)
 				}
 	
 				/* MOV REGTMP, b */
-				q = prg();
-				q->link = p->link;
-				p->link = q;
-				p = q;
-	
+				p = appendp(p);
 				p->as = AMOVW;
 				p->line = q1->line;
 				p->from.type = D_REG;
@@ -438,12 +441,9 @@ noops(void)
 				p->to.reg = q1->to.reg;
 	
 				/* ADD $8,SP */
-				q = prg();
-				q->link = p->link;
-				p->link = q;
-				p = q;
-	
+				p = appendp(p);
 				p->as = AADD;
+				p->line = q1->line;
 				p->from.type = D_CONST;
 				p->from.reg = NREG;
 				p->from.offset = 8;

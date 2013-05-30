@@ -32,6 +32,7 @@
 
 #include	"l.h"
 #include	"../ld/lib.h"
+#include	"../ld/elf.h"
 
 static int32	vaddr(Adr*, Reloc*);
 
@@ -194,7 +195,7 @@ instinit(void)
 
 	for(i=1; optab[i].as; i++)
 		if(i != optab[i].as) {
-			diag("phase error in optab: %d", i);
+			diag("phase error in optab: at %A found %A", i, optab[i].as);
 			errorexit();
 		}
 	maxop = i;
@@ -238,6 +239,16 @@ instinit(void)
 	ycover[Yrl*Ymax + Yml] = 1;
 	ycover[Ym*Ymax + Yml] = 1;
 
+	ycover[Yax*Ymax + Ymm] = 1;
+	ycover[Ycx*Ymax + Ymm] = 1;
+	ycover[Yrx*Ymax + Ymm] = 1;
+	ycover[Yrl*Ymax + Ymm] = 1;
+	ycover[Ym*Ymax + Ymm] = 1;
+	ycover[Ymr*Ymax + Ymm] = 1;
+
+	ycover[Ym*Ymax + Yxm] = 1;
+	ycover[Yxr*Ymax + Yxm] = 1;
+
 	for(i=0; i<D_NONE; i++) {
 		reg[i] = -1;
 		if(i >= D_AL && i <= D_BH)
@@ -246,6 +257,8 @@ instinit(void)
 			reg[i] = (i-D_AX) & 7;
 		if(i >= D_F0 && i <= D_F0+7)
 			reg[i] = (i-D_F0) & 7;
+		if(i >= D_X0 && i <= D_X0+7)
+			reg[i] = (i-D_X0) & 7;
 	}
 }
 
@@ -332,6 +345,16 @@ oclass(Adr *a)
 	case D_F0+6:
 	case D_F0+7:
 		return	Yrf;
+
+	case D_X0+0:
+	case D_X0+1:
+	case D_X0+2:
+	case D_X0+3:
+	case D_X0+4:
+	case D_X0+5:
+	case D_X0+6:
+	case D_X0+7:
+		return	Yxr;
 
 	case D_NONE:
 		return Ynone;
@@ -537,6 +560,14 @@ vaddr(Adr *a, Reloc *r)
 	return v;
 }
 
+static int
+istls(Adr *a)
+{
+	if(HEADTYPE == Hlinux)
+		return a->index == D_GS;
+	return a->type == D_INDIR+D_GS;
+}
+
 void
 asmand(Adr *a, int r)
 {
@@ -547,7 +578,7 @@ asmand(Adr *a, int r)
 	v = a->offset;
 	t = a->type;
 	rel.siz = 0;
-	if(a->index != D_NONE) {
+	if(a->index != D_NONE && a->index != D_FS && a->index != D_GS) {
 		if(t < D_INDIR || t >= 2*D_INDIR) {
 			switch(t) {
 			default:
@@ -585,7 +616,7 @@ asmand(Adr *a, int r)
 		asmidx(a->scale, a->index, t);
 		goto putrelv;
 	}
-	if(t >= D_AL && t <= D_F0+7) {
+	if(t >= D_AL && t <= D_F7 || t >= D_X0 && t <= D_X7) {
 		if(v)
 			goto bad;
 		*andptr++ = (3 << 6) | (reg[t] << 0) | (r << 3);
@@ -636,7 +667,7 @@ asmand(Adr *a, int r)
 			*andptr++ = (0 << 6) | (reg[t] << 0) | (r << 3);
 			return;
 		}
-		if(v >= -128 && v < 128 && rel.siz == 0) {
+		if(v >= -128 && v < 128 && rel.siz == 0 && a->index != D_FS && a->index != D_GS) {
 			andptr[0] = (1 << 6) | (reg[t] << 0) | (r << 3);
 			andptr[1] = v;
 			andptr += 2;
@@ -658,7 +689,29 @@ putrelv:
 		r = addrel(cursym);
 		*r = rel;
 		r->off = curp->pc + andptr - and;
+	} else if(iself && linkmode == LinkExternal && istls(a) && HEADTYPE != Hopenbsd) {
+		Reloc *r;
+		Sym *s;
+
+		r = addrel(cursym);
+		r->off = curp->pc + andptr - and;
+		r->add = 0;
+		r->xadd = 0;
+		r->siz = 4;
+		r->type = D_TLS;
+		if(a->offset == tlsoffset+0)
+			s = lookup("runtime.g", 0);
+		else
+			s = lookup("runtime.m", 0);
+		s->type = STLSBSS;
+		s->reachable = 1;
+		s->hide = 1;
+		s->size = PtrSize;
+		r->sym = s;
+		r->xsym = s;
+		v = 0;
 	}
+
 	put4(v);
 	return;
 
@@ -772,19 +825,71 @@ uchar	ymovtab[] =
 	0
 };
 
+// byteswapreg returns a byte-addressable register (AX, BX, CX, DX)
+// which is not referenced in a->type.
+// If a is empty, it returns BX to account for MULB-like instructions
+// that might use DX and AX.
 int
-isax(Adr *a)
+byteswapreg(Adr *a)
 {
+	int cana, canb, canc, cand;
+
+	cana = canb = canc = cand = 1;
 
 	switch(a->type) {
+	case D_NONE:
+		cana = cand = 0;
+		break;
 	case D_AX:
 	case D_AL:
 	case D_AH:
 	case D_INDIR+D_AX:
-		return 1;
+		cana = 0;
+		break;
+	case D_BX:
+	case D_BL:
+	case D_BH:
+	case D_INDIR+D_BX:
+		canb = 0;
+		break;
+	case D_CX:
+	case D_CL:
+	case D_CH:
+	case D_INDIR+D_CX:
+		canc = 0;
+		break;
+	case D_DX:
+	case D_DL:
+	case D_DH:
+	case D_INDIR+D_DX:
+		cand = 0;
+		break;
 	}
-	if(a->index == D_AX)
-		return 1;
+	switch(a->index) {
+	case D_AX:
+		cana = 0;
+		break;
+	case D_BX:
+		canb = 0;
+		break;
+	case D_CX:
+		canc = 0;
+		break;
+	case D_DX:
+		cand = 0;
+		break;
+	}
+	if(cana)
+		return D_AX;
+	if(canb)
+		return D_BX;
+	if(canc)
+		return D_CX;
+	if(cand)
+		return D_DX;
+
+	diag("impossible byte register");
+	errorexit();
 	return 0;
 }
 
@@ -827,13 +932,37 @@ subreg(Prog *p, int from, int to)
 		print("%P\n", p);
 }
 
+static int
+mediaop(Optab *o, int op, int osize, int z)
+{
+	switch(op){
+	case Pm:
+	case Pe:
+	case Pf2:
+	case Pf3:
+		if(osize != 1){
+			if(op != Pm)
+				*andptr++ = op;
+			*andptr++ = Pm;
+			op = o->op[++z];
+			break;
+		}
+	default:
+		if(andptr == and || andptr[-1] != Pm)
+			*andptr++ = Pm;
+		break;
+	}
+	*andptr++ = op;
+	return z;
+}
+
 void
 doasm(Prog *p)
 {
 	Optab *o;
 	Prog *q, pp;
 	uchar *t;
-	int z, op, ft, tt;
+	int z, op, ft, tt, breg;
 	int32 v, pre;
 	Reloc rel, *r;
 	Adr *a;
@@ -873,6 +1002,12 @@ found:
 		*andptr++ = Pm;
 		break;
 
+	case Pf2:	/* xmm opcode escape */
+	case Pf3:
+		*andptr++ = o->prefix;
+		*andptr++ = Pm;
+		break;
+
 	case Pm:	/* opcode escape */
 		*andptr++ = Pm;
 		break;
@@ -899,9 +1034,39 @@ found:
 			*andptr++ = op;
 		break;
 
+	case Zlitm_r:
+		for(; op = o->op[z]; z++)
+			*andptr++ = op;
+		asmand(&p->from, reg[p->to.type]);
+		break;
+
 	case Zm_r:
 		*andptr++ = op;
 		asmand(&p->from, reg[p->to.type]);
+		break;
+
+	case Zm2_r:
+		*andptr++ = op;
+		*andptr++ = o->op[z+1];
+		asmand(&p->from, reg[p->to.type]);
+		break;
+
+	case Zm_r_xm:
+		mediaop(o, op, t[3], z);
+		asmand(&p->from, reg[p->to.type]);
+		break;
+
+	case Zm_r_i_xm:
+		mediaop(o, op, t[3], z);
+		asmand(&p->from, reg[p->to.type]);
+		*andptr++ = p->to.offset;
+		break;
+
+	case Zibm_r:
+		while ((op = o->op[z++]) != 0)
+			*andptr++ = op;
+		asmand(&p->from, reg[p->to.type]);
+		*andptr++ = p->to.offset;
 		break;
 
 	case Zaut_r:
@@ -925,6 +1090,17 @@ found:
 	case Zr_m:
 		*andptr++ = op;
 		asmand(&p->to, reg[p->from.type]);
+		break;
+
+	case Zr_m_xm:
+		mediaop(o, op, t[3], z);
+		asmand(&p->to, reg[p->from.type]);
+		break;
+
+	case Zr_m_i_xm:
+		mediaop(o, op, t[3], z);
+		asmand(&p->to, reg[p->from.type]);
+		*andptr++ = p->from.offset;
 		break;
 
 	case Zo_m:
@@ -1198,13 +1374,13 @@ bad:
 	pp = *p;
 	z = p->from.type;
 	if(z >= D_BP && z <= D_DI) {
-		if(isax(&p->to)) {
+		if((breg = byteswapreg(&p->to)) != D_AX) {
 			*andptr++ = 0x87;			/* xchg lhs,bx */
-			asmand(&p->from, reg[D_BX]);
-			subreg(&pp, z, D_BX);
+			asmand(&p->from, reg[breg]);
+			subreg(&pp, z, breg);
 			doasm(&pp);
 			*andptr++ = 0x87;			/* xchg lhs,bx */
-			asmand(&p->from, reg[D_BX]);
+			asmand(&p->from, reg[breg]);
 		} else {
 			*andptr++ = 0x90 + reg[z];		/* xchg lsh,ax */
 			subreg(&pp, z, D_AX);
@@ -1215,13 +1391,13 @@ bad:
 	}
 	z = p->to.type;
 	if(z >= D_BP && z <= D_DI) {
-		if(isax(&p->from)) {
+		if((breg = byteswapreg(&p->from)) != D_AX) {
 			*andptr++ = 0x87;			/* xchg rhs,bx */
-			asmand(&p->to, reg[D_BX]);
-			subreg(&pp, z, D_BX);
+			asmand(&p->to, reg[breg]);
+			subreg(&pp, z, breg);
 			doasm(&pp);
 			*andptr++ = 0x87;			/* xchg rhs,bx */
-			asmand(&p->to, reg[D_BX]);
+			asmand(&p->to, reg[breg]);
 		} else {
 			*andptr++ = 0x90 + reg[z];		/* xchg rsh,ax */
 			subreg(&pp, z, D_AX);

@@ -35,10 +35,10 @@ func initRewrite() {
 // It might make sense to expand this to allow statement patterns,
 // but there are problems with preserving formatting and also
 // with what a wildcard for a statement looks like.
-func parseExpr(s string, what string) ast.Expr {
+func parseExpr(s, what string) ast.Expr {
 	x, err := parser.ParseExpr(s)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "parsing %s %s: %s\n", what, s, err)
+		fmt.Fprintf(os.Stderr, "parsing %s %s at %s\n", what, s, err)
 		os.Exit(2)
 	}
 	return x
@@ -55,6 +55,7 @@ func dump(msg string, val reflect.Value) {
 
 // rewriteFile applies the rewrite rule 'pattern -> replace' to an entire file.
 func rewriteFile(pattern, replace ast.Expr, p *ast.File) *ast.File {
+	cmap := ast.NewCommentMap(fileSet, p, p.Comments)
 	m := make(map[string]reflect.Value)
 	pat := reflect.ValueOf(pattern)
 	repl := reflect.ValueOf(replace)
@@ -73,7 +74,9 @@ func rewriteFile(pattern, replace ast.Expr, p *ast.File) *ast.File {
 		}
 		return val
 	}
-	return apply(f, reflect.ValueOf(p)).Interface().(*ast.File)
+	r := apply(f, reflect.ValueOf(p)).Interface().(*ast.File)
+	r.Comments = cmap.Filter(r).Comments() // recreate comments list
+	return r
 }
 
 // setValue is a wrapper for x.SetValue(y); it protects
@@ -104,6 +107,7 @@ var (
 	identType     = reflect.TypeOf((*ast.Ident)(nil))
 	objectPtrType = reflect.TypeOf((*ast.Object)(nil))
 	positionType  = reflect.TypeOf(token.NoPos)
+	callExprType  = reflect.TypeOf((*ast.CallExpr)(nil))
 	scopePtrType  = reflect.TypeOf((*ast.Scope)(nil))
 )
 
@@ -189,8 +193,17 @@ func match(m map[string]reflect.Value, pattern, val reflect.Value) bool {
 		v := val.Interface().(*ast.Ident)
 		return p == nil && v == nil || p != nil && v != nil && p.Name == v.Name
 	case objectPtrType, positionType:
-		// object pointers and token positions don't need to match
+		// object pointers and token positions always match
 		return true
+	case callExprType:
+		// For calls, the Ellipsis fields (token.Position) must
+		// match since that is how f(x) and f(x...) are different.
+		// Check them here but fall through for the remaining fields.
+		p := pattern.Interface().(*ast.CallExpr)
+		v := val.Interface().(*ast.CallExpr)
+		if p.Ellipsis.IsValid() != v.Ellipsis.IsValid() {
+			return false
+		}
 	}
 
 	p := reflect.Indirect(pattern)

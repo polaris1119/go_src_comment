@@ -14,11 +14,12 @@ compile(Node *fn)
 {
 	Plist *pl;
 	Node nod1, *n;
-	Prog *ptxt;
+	Prog *plocals, *ptxt, *p, *p1;
 	int32 lno;
 	Type *t;
 	Iter save;
 	vlong oldstksize;
+	NodeList *l;
 
 	if(newproc == N) {
 		newproc = sysfunc("newproc");
@@ -29,15 +30,18 @@ compile(Node *fn)
 		throwreturn = sysfunc("throwreturn");
 	}
 
-	if(fn->nbody == nil)
-		return;
+	lno = setlineno(fn);
+
+	if(fn->nbody == nil) {
+		if(pure_go || memcmp(fn->nname->sym->name, "init·", 6) == 0)
+			yyerror("missing function body", fn);
+		goto ret;
+	}
 
 	saveerrors();
 
 	// set up domain for labels
 	clearlabels();
-
-	lno = setlineno(fn);
 
 	curfn = fn;
 	dowidth(curfn->type);
@@ -63,6 +67,10 @@ compile(Node *fn)
 	walk(curfn);
 	if(nerrors != 0)
 		goto ret;
+	if(flag_race)
+		racewalk(curfn);
+	if(nerrors != 0)
+		goto ret;
 
 	continpc = P;
 	breakpc = P;
@@ -76,15 +84,34 @@ compile(Node *fn)
 	ptxt = gins(ATEXT, isblank(curfn->nname) ? N : curfn->nname, &nod1);
 	if(fn->dupok)
 		ptxt->TEXTFLAG = DUPOK;
-	afunclit(&ptxt->from);
+	afunclit(&ptxt->from, curfn->nname);
 
 	ginit();
+
+	plocals = gins(ALOCALS, N, N);
+
+	for(t=curfn->paramfld; t; t=t->down)
+		gtrack(tracksym(t->type));
+
+	for(l=fn->dcl; l; l=l->next) {
+		n = l->n;
+		if(n->op != ONAME) // might be OTYPE or OLITERAL
+			continue;
+		switch(n->class) {
+		case PAUTO:
+		case PPARAM:
+		case PPARAMOUT:
+			nodconst(&nod1, types[TUINTPTR], l->n->type->width);
+			p = gins(ATYPE, l->n, &nod1);
+			p->from.gotype = ngotype(l->n);
+			break;
+		}
+	}
+
 	genlist(curfn->enter);
 
 	retpc = nil;
 	if(hasdefer || curfn->exit) {
-		Prog *p1;
-
 		p1 = gjmp(nil);
 		retpc = gjmp(nil);
 		patch(p1, pc);
@@ -111,6 +138,7 @@ compile(Node *fn)
 	gclean();
 	if(nerrors != 0)
 		goto ret;
+
 	pc->as = ARET;	// overwrite AEND
 	pc->lineno = lineno;
 
@@ -120,6 +148,10 @@ compile(Node *fn)
 
 	oldstksize = stksize;
 	allocauto(ptxt);
+
+	plocals->to.type = D_CONST;
+	plocals->to.offset = stksize;
+
 	if(0)
 		print("allocauto: %lld to %lld\n", oldstksize, (vlong)stksize);
 
@@ -145,8 +177,13 @@ cmpstackvar(Node *a, Node *b)
 {
 	if (a->class != b->class)
 		return (a->class == PAUTO) ? 1 : -1;
-	if (a->class != PAUTO)
-		return a->xoffset - b->xoffset;
+	if (a->class != PAUTO) {
+		if (a->xoffset < b->xoffset)
+			return -1;
+		if (a->xoffset > b->xoffset)
+			return 1;
+		return 0;
+	}
 	if ((a->used == 0) != (b->used == 0))
 		return b->used - a->used;
 	return b->type->align - a->type->align;
@@ -177,8 +214,10 @@ allocauto(Prog* ptxt)
 	ll = curfn->dcl;
 	n = ll->n;
 	if (n->class == PAUTO && n->op == ONAME && !n->used) {
+		// No locals used at all
 		curfn->dcl = nil;
 		stksize = 0;
+		fixautoused(ptxt);
 		return;
 	}
 
@@ -206,6 +245,10 @@ allocauto(Prog* ptxt)
 		stksize = rnd(stksize, n->type->align);
 		if(thechar == '5')
 			stksize = rnd(stksize, widthptr);
+		if(stksize >= (1ULL<<31)) {
+			setlineno(curfn);
+			yyerror("stack frame too large (>2GB)");
+		}
 		n->stkdelta = -stksize - n->xoffset;
 	}
 

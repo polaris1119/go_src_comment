@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build !race
+
 // ARM atomic operations, for use by asm_$(GOOS)_arm.s.
 
 TEXT ·armCompareAndSwapUint32(SB),7,$0
-	MOVW	valptr+0(FP), R1
+	MOVW	addr+0(FP), R1
 	MOVW	old+4(FP), R2
 	MOVW	new+8(FP), R3
 casloop:
@@ -26,7 +28,11 @@ casfail:
 
 TEXT ·armCompareAndSwapUint64(SB),7,$0
 	BL	fastCheck64<>(SB)
-	MOVW	valptr+0(FP), R1
+	MOVW	addr+0(FP), R1
+	// make unaligned atomic access panic
+	AND.S	$7, R1, R2
+	BEQ 	2(PC)
+	MOVW	R2, (R2)
 	MOVW	oldlo+4(FP), R2
 	MOVW	oldhi+8(FP), R3
 	MOVW	newlo+12(FP), R4
@@ -50,7 +56,7 @@ cas64fail:
 	RET
 
 TEXT ·armAddUint32(SB),7,$0
-	MOVW	valptr+0(FP), R1
+	MOVW	addr+0(FP), R1
 	MOVW	delta+4(FP), R2
 addloop:
 	// LDREX and STREX were introduced in ARM 6.
@@ -64,7 +70,11 @@ addloop:
 
 TEXT ·armAddUint64(SB),7,$0
 	BL	fastCheck64<>(SB)
-	MOVW	valptr+0(FP), R1
+	MOVW	addr+0(FP), R1
+	// make unaligned atomic access panic
+	AND.S	$7, R1, R2
+	BEQ 	2(PC)
+	MOVW	R2, (R2)
 	MOVW	deltalo+4(FP), R2
 	MOVW	deltahi+8(FP), R3
 add64loop:
@@ -81,7 +91,11 @@ add64loop:
 
 TEXT ·armLoadUint64(SB),7,$0
 	BL	fastCheck64<>(SB)
-	MOVW	addrptr+0(FP), R1
+	MOVW	addr+0(FP), R1
+	// make unaligned atomic access panic
+	AND.S	$7, R1, R2
+	BEQ 	2(PC)
+	MOVW	R2, (R2)
 load64loop:
 	LDREXD	(R1), R2	// loads R2 and R3
 	STREXD	R2, (R1), R0	// stores R2 and R3
@@ -93,7 +107,11 @@ load64loop:
 
 TEXT ·armStoreUint64(SB),7,$0
 	BL	fastCheck64<>(SB)
-	MOVW	addrptr+0(FP), R1
+	MOVW	addr+0(FP), R1
+	// make unaligned atomic access panic
+	AND.S	$7, R1, R2
+	BEQ 	2(PC)
+	MOVW	R2, (R2)
 	MOVW	vallo+4(FP), R2
 	MOVW	valhi+8(FP), R3
 store64loop:

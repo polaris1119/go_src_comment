@@ -115,26 +115,10 @@ errstr(void)
 	binit(&b);
 	code = GetLastError();
 	r = nil;
-	FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM,
+	FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,
 		nil, code, 0, (Rune*)&r, 0, nil);
 	toutf(&b, r);
 	return bstr(&b);  // leak but we're dying anyway
-}
-
-static void
-errprintf(char *fmt, ...) {
-	va_list arg;
-	char *p;
-	DWORD n, w;
-
-	va_start(arg, fmt);
-	n = vsnprintf(NULL, 0, fmt, arg);
-	p = xmalloc(n+1);
-	vsnprintf(p, n+1, fmt, arg);
-	va_end(arg);
-	w = 0;
-	WriteFile(GetStdHandle(STD_ERROR_HANDLE), p, n, &w, 0);
-	xfree(p);
 }
 
 void
@@ -287,6 +271,8 @@ static void bgwait1(void);
 static void
 genrun(Buf *b, char *dir, int mode, Vec *argv, int wait)
 {
+	// Another copy of this logic is in ../../lib9/run_windows.c.
+	// If there's a bug here, fix the logic there too.
 	int i, j, nslash;
 	Buf cmd;
 	char *q;
@@ -301,9 +287,11 @@ genrun(Buf *b, char *dir, int mode, Vec *argv, int wait)
 	binit(&cmd);
 
 	for(i=0; i<argv->len; i++) {
+		q = argv->p[i];
+		if(i == 0 && streq(q, "hg"))
+			bwritestr(&cmd, "cmd.exe /c ");
 		if(i > 0)
 			bwritestr(&cmd, " ");
-		q = argv->p[i];
 		if(contains(q, " ") || contains(q, "\t") || contains(q, "\"") || contains(q, "\\\\") || hassuffix(q, "\\")) {
 			bwritestr(&cmd, "\"");
 			nslash = 0;
@@ -330,7 +318,7 @@ genrun(Buf *b, char *dir, int mode, Vec *argv, int wait)
 		}
 	}
 	if(vflag > 1)
-		xprintf("%s\n", bstr(&cmd));
+		errprintf("%s\n", bstr(&cmd));
 
 	torune(&rcmd, bstr(&cmd));
 	rexe = nil;
@@ -544,8 +532,9 @@ readfile(Buf *b, char *file)
 	HANDLE h;
 	Rune *r;
 
+	breset(b);
 	if(vflag > 2)
-		xprintf("read %s\n", file);
+		errprintf("read %s\n", file);
 	torune(&r, file);
 	h = CreateFileW(r, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, nil, OPEN_EXISTING, 0, 0);
 	if(h == INVALID_HANDLE_VALUE)
@@ -564,7 +553,7 @@ writefile(Buf *b, char *file, int exec)
 	USED(exec);
 
 	if(vflag > 2)
-		xprintf("write %s\n", file);
+		errprintf("write %s\n", file);
 	torune(&r, file);
 	h = CreateFileW(r, GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, nil, CREATE_ALWAYS, 0, 0);
 	if(h == INVALID_HANDLE_VALUE)
@@ -864,6 +853,23 @@ xprintf(char *fmt, ...)
 	xfree(p);
 }
 
+void
+errprintf(char *fmt, ...)
+{
+	va_list arg;
+	char *p;
+	DWORD n, w;
+
+	va_start(arg, fmt);
+	n = vsnprintf(NULL, 0, fmt, arg);
+	p = xmalloc(n+1);
+	vsnprintf(p, n+1, fmt, arg);
+	va_end(arg);
+	w = 0;
+	WriteFile(GetStdHandle(STD_ERROR_HANDLE), p, n, &w, 0);
+	xfree(p);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -922,5 +928,76 @@ xstrrchr(char *p, int c)
 			return ep;
 	return nil;
 }
+
+// xsamefile returns whether f1 and f2 are the same file (or dir)
+int
+xsamefile(char *f1, char *f2)
+{
+	Rune *ru;
+	HANDLE fd1, fd2;
+	BY_HANDLE_FILE_INFORMATION fi1, fi2;
+	int r;
+
+	// trivial case
+	if(streq(f1, f2))
+		return 1;
+	
+	torune(&ru, f1);
+	// refer to ../../pkg/os/stat_windows.go:/sameFile
+	fd1 = CreateFileW(ru, 0, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+	xfree(ru);
+	if(fd1 == INVALID_HANDLE_VALUE)
+		return 0;
+	torune(&ru, f2);
+	fd2 = CreateFileW(ru, 0, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+	xfree(ru);
+	if(fd2 == INVALID_HANDLE_VALUE) {
+		CloseHandle(fd1);
+		return 0;
+	}
+	r = GetFileInformationByHandle(fd1, &fi1) != 0 && GetFileInformationByHandle(fd2, &fi2) != 0;
+	CloseHandle(fd2);
+	CloseHandle(fd1);
+	if(r != 0 &&
+	   fi1.dwVolumeSerialNumber == fi2.dwVolumeSerialNumber &&
+	   fi1.nFileIndexHigh == fi2.nFileIndexHigh &&
+	   fi1.nFileIndexLow == fi2.nFileIndexLow)
+	   	return 1;
+	return 0;
+}
+
+// xtryexecfunc tries to execute function f, if any illegal instruction
+// signal received in the course of executing that function, it will
+// return 0, otherwise it will return 1.
+int
+xtryexecfunc(void (*f)(void))
+{
+	return 0; // suffice for now
+}
+
+static void
+cpuid(int dst[4], int ax)
+{
+	// NOTE: This asm statement is for mingw.
+	// If we ever support MSVC, use __cpuid(dst, ax)
+	// to use the built-in.
+#if defined(__i386__) || defined(__x86_64__)
+	asm volatile("cpuid"
+		: "=a" (dst[0]), "=b" (dst[1]), "=c" (dst[2]), "=d" (dst[3])
+		: "0" (ax));
+#else
+	dst[0] = dst[1] = dst[2] = dst[3] = 0;
+#endif
+}
+
+bool
+cansse2(void)
+{
+	int info[4];
+	
+	cpuid(info, 1);
+	return (info[3] & (1<<26)) != 0;	// SSE2
+}
+
 
 #endif // __WINDOWS__

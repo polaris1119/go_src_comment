@@ -137,6 +137,7 @@ typedef	struct	Label	Label;
 struct	Type
 {
 	uchar	etype;
+	uchar	nointerface;
 	uchar	chan;
 	uchar	trecur;		// to detect loops
 	uchar	printed;
@@ -146,7 +147,7 @@ struct	Type
 	uchar	copyany;
 	uchar	local;		// created in this file
 	uchar	deferwidth;
-	uchar	broke;
+	uchar	broke;  	// broken type definition.
 	uchar	isddd;		// TFIELD is ... argument
 	uchar	align;
 
@@ -154,10 +155,10 @@ struct	Type
 	Type*	orig;		// original type (type literal or predefined type)
 	int		lineno;
 
-	// TFUNCT
-	uchar	thistuple;
-	uchar	outtuple;
-	uchar	intuple;
+	// TFUNC
+	int	thistuple;
+	int	outtuple;
+	int	intuple;
 	uchar	outnamed;
 
 	Type*	method;
@@ -170,21 +171,25 @@ struct	Type
 	vlong	argwid;
 
 	// most nodes
-	Type*	type;
-	vlong	width;		// offset in TFIELD, width in all others
+	Type*	type;   	// actual type for TFIELD, element type for TARRAY, TCHAN, TMAP, TPTRxx
+	vlong	width;  	// offset in TFIELD, width in all others
 
 	// TFIELD
-	Type*	down;		// also used in TMAP
+	Type*	down;		// next struct field, also key type in TMAP
+	Type*	outer;		// outer struct
 	Strlit*	note;		// literal string annotation
 
 	// TARRAY
-	int32	bound;		// negative is dynamic array
+	vlong	bound;		// negative is dynamic array
 
 	int32	maplineno;	// first use of TFORW as map key
 	int32	embedlineno;	// first use of TFORW as embedded type
 	
 	// for TFORW, where to copy the eventual value to
 	NodeList	*copyto;
+	
+	// for usefield
+	Node	*lastfn;
 };
 #define	T	((Type*)0)
 
@@ -215,7 +220,10 @@ enum
 	EscHeap,
 	EscScope,
 	EscNone,
+	EscReturn,
 	EscNever,
+	EscBits = 4,
+	EscMask = (1<<EscBits) - 1,
 };
 
 struct	Node
@@ -233,17 +241,18 @@ struct	Node
 	NodeList*	rlist;
 
 	uchar	op;
+	uchar	nointerface;
 	uchar	ullman;		// sethi/ullman number
 	uchar	addable;	// type of addressability - 0 is not addressable
 	uchar	trecur;		// to detect loops
 	uchar	etype;		// op for OASOP, etype for OTYPE, exclam for export
+	uchar	bounded;	// bounds check unnecessary
 	uchar	class;		// PPARAM, PAUTO, PEXTERN, etc
 	uchar	method;		// OCALLMETH name
 	uchar	embedded;	// ODCLFIELD embedded type
 	uchar	colas;		// OAS resulting from :=
 	uchar	diag;		// already printed error about this
-	uchar	esc;		// EscXXX
-	uchar	funcdepth;
+	uchar	noescape;	// func arguments do not escape
 	uchar	builtin;	// built-in name, like len or close
 	uchar	walkdef;
 	uchar	typecheck;
@@ -256,10 +265,13 @@ struct	Node
 	uchar	implicit;
 	uchar	addrtaken;	// address taken, even if not moved to heap
 	uchar	dupok;	// duplicate definitions ok (for func)
+	schar	likely; // likeliness of if statement
+	uchar	hasbreak;	// has break statement
+	uint	esc;		// EscXXX
+	int	funcdepth;
 
 	// most nodes
 	Type*	type;
-	Type*	realtype;	// as determined by typecheck
 	Node*	orig;		// original form, for printing, and tracking copies of ONAMEs
 
 	// func
@@ -279,7 +291,7 @@ struct	Node
 	Node*	defn;	// ONAME: initializing assignment; OLABEL: labeled statement
 	Node*	pack;	// real package for import . names
 	Node*	curfn;	// function for local variables
-	Type*	paramfld; // TFIELD for this PPARAM
+	Type*	paramfld; // TFIELD for this PPARAM; also for ODOT, curfn
 
 	// ONAME func param with PHEAP
 	Node*	heapaddr;	// temp holding heap address of param
@@ -301,17 +313,19 @@ struct	Node
 
 	// Escape analysis.
 	NodeList* escflowsrc;	// flow(this, src)
-	int	escloopdepth;	// -1: global, 0: not set, function top level:1, increased inside function for every loop or label to mark scopes
+	NodeList* escretval;	// on OCALLxxx, list of dummy return values
+	int	escloopdepth;	// -1: global, 0: return variables, 1:function top level, increased inside function for every loop or label to mark scopes
 
 	Sym*	sym;		// various
 	int32	vargen;		// unique name for OTYPE/ONAME
 	int32	lineno;
 	int32	endlineno;
 	vlong	xoffset;
-	int32	stkdelta;	// offset added by stack frame compaction phase.
+	vlong	stkdelta;	// offset added by stack frame compaction phase.
 	int32	ostk;
 	int32	iota;
 	uint32	walkgen;
+	int32	esclevel;
 };
 #define	N	((Node*)0)
 
@@ -345,6 +359,7 @@ enum
 	SymExported	= 1<<2,	// already written out by export
 	SymUniq		= 1<<3,
 	SymSiggen	= 1<<4,
+	SymGcgen	= 1<<5,
 };
 
 struct	Sym
@@ -354,6 +369,7 @@ struct	Sym
 	uchar	sym;		// huffman encoding in object file
 	Sym*	link;
 	int32	npkg;	// number of imported packages with this name
+	uint32	uniqgen;
 
 	// saved and restored by dcopy
 	Pkg*	pkg;
@@ -362,6 +378,7 @@ struct	Sym
 	Label*	label;	// corresponding label (ephemeral)
 	int32	block;		// blocknumber to catch redeclaration
 	int32	lastlineno;	// last declaration for diagnostic
+	Pkg*	origpkg;	// original package for . import
 };
 #define	S	((Sym*)0)
 
@@ -374,8 +391,10 @@ struct	Pkg
 	Sym*	pathsym;
 	char*	prefix;		// escaped path for use in symbol table
 	Pkg*	link;
+	uchar	imported;	// export data of this package was parsed
 	char	exported;	// import line written in export data
 	char	direct;	// imported directly
+	char	safe;	// whether the package is marked as safe
 };
 
 typedef	struct	Iter	Iter;
@@ -398,102 +417,173 @@ struct	Hist
 };
 #define	H	((Hist*)0)
 
+// Node ops.
 enum
 {
 	OXXX,
 
 	// names
-	ONAME,
-	ONONAME,
-	OTYPE,
-	OPACK,
-	OLITERAL,
+	ONAME,	// var, const or func name
+	ONONAME,	// unnamed arg or return value: f(int, string) (int, error) { etc }
+	OTYPE,	// type name
+	OPACK,	// import
+	OLITERAL, // literal
 
-	// exprs
-	OADD, OSUB, OOR, OXOR, OADDSTR,
-	OADDR,
-	OANDAND,
-	OAPPEND,
-	OARRAYBYTESTR, OARRAYRUNESTR,
-	OSTRARRAYBYTE, OSTRARRAYRUNE,
-	OAS, OAS2, OAS2FUNC, OAS2RECV, OAS2MAPR, OAS2DOTTYPE,
-	OASOP,
-	OBAD,
-	OCALL, OCALLFUNC, OCALLMETH, OCALLINTER,
-	OCAP,
-	OCLOSE,
-	OCLOSURE,
-	OCMPIFACE, OCMPSTR,
-	OCOMPLIT, OMAPLIT, OSTRUCTLIT, OARRAYLIT, OPTRLIT,
-	OCONV, OCONVIFACE, OCONVNOP,
-	OCOPY,
-	ODCL, ODCLFUNC, ODCLFIELD, ODCLCONST, ODCLTYPE,
-	ODELETE,
-	ODOT, ODOTPTR, ODOTMETH, ODOTINTER, OXDOT,
-	ODOTTYPE,
-	ODOTTYPE2,
-	OEQ, ONE, OLT, OLE, OGE, OGT,
-	OIND,
-	OINDEX, OINDEXMAP,
-	OKEY, OPARAM,
-	OLEN,
-	OMAKE, OMAKECHAN, OMAKEMAP, OMAKESLICE,
-	OHMUL, ORRC, OLRC,	// high-mul and rotate-carry
-	OMUL, ODIV, OMOD, OLSH, ORSH, OAND, OANDNOT,
-	ONEW,
-	ONOT, OCOM, OPLUS, OMINUS,
-	OOROR,
-	OPANIC, OPRINT, OPRINTN,
-	OPAREN,
-	OSEND,
-	OSLICE, OSLICEARR, OSLICESTR,
-	ORECOVER,
-	ORECV,
-	ORUNESTR,
-	OSELRECV,
-	OSELRECV2,
-	OIOTA,
-	OREAL, OIMAG, OCOMPLEX,
+	// expressions
+	OADD,	// x + y
+	OSUB,	// x - y
+	OOR,	// x | y
+	OXOR,	// x ^ y
+	OADDSTR,	// s + "foo"
+	OADDR,	// &x
+	OANDAND,	// b0 && b1
+	OAPPEND,	// append
+	OARRAYBYTESTR,	// string(bytes)
+	OARRAYRUNESTR,	// string(runes)
+	OSTRARRAYBYTE,	// []byte(s)
+	OSTRARRAYRUNE,	// []rune(s)
+	OAS,	// x = y or x := y
+	OAS2,	// x, y, z = xx, yy, zz
+	OAS2FUNC,	// x, y = f()
+	OAS2RECV,	// x, ok = <-c
+	OAS2MAPR,	// x, ok = m["foo"]
+	OAS2DOTTYPE,	// x, ok = I.(int)
+	OASOP,	// x += y
+	OCALL,	// function call, method call or type conversion, possibly preceded by defer or go.
+	OCALLFUNC,	// f()
+	OCALLMETH,	// t.Method()
+	OCALLINTER,	// err.Error()
+	OCALLPART,	// t.Method (without ())
+	OCAP,	// cap
+	OCLOSE,	// close
+	OCLOSURE,	// f = func() { etc }
+	OCMPIFACE,	// err1 == err2
+	OCMPSTR,	// s1 == s2
+	OCOMPLIT,	// composite literal, typechecking may convert to a more specific OXXXLIT.
+	OMAPLIT,	// M{"foo":3, "bar":4}
+	OSTRUCTLIT,	// T{x:3, y:4}
+	OARRAYLIT,	// [2]int{3, 4}
+	OPTRLIT,	// &T{x:3, y:4}
+	OCONV,	// var i int; var u uint; i = int(u)
+	OCONVIFACE,	// I(t)
+	OCONVNOP,	// type Int int; var i int; var j Int; i = int(j)
+	OCOPY,	// copy
+	ODCL,	// var x int
+	ODCLFUNC,	// func f() or func (r) f()
+	ODCLFIELD,	// struct field, interface field, or func/method argument/return value.
+	ODCLCONST,	// const pi = 3.14
+	ODCLTYPE,	// type Int int
+	ODELETE,	// delete
+	ODOT,	// t.x
+	ODOTPTR,	// p.x that is implicitly (*p).x
+	ODOTMETH,	// t.Method
+	ODOTINTER,	// err.Error
+	OXDOT,	// t.x, typechecking may convert to a more specific ODOTXXX.
+	ODOTTYPE,	// e = err.(MyErr)
+	ODOTTYPE2,	// e, ok = err.(MyErr)
+	OEQ,	// x == y
+	ONE,	// x != y
+	OLT,	// x < y
+	OLE,	// x <= y
+	OGE,	// x >= y
+	OGT,	// x > y
+	OIND,	// *p
+	OINDEX,	// a[i]
+	OINDEXMAP,	// m[s]
+	OKEY,	// The x:3 in t{x:3, y:4}, the 1:2 in a[1:2], the 2:20 in [3]int{2:20}, etc.
+	OPARAM,	// The on-stack copy of a parameter or return value that escapes.
+	OLEN,	// len
+	OMAKE,	// make, typechecking may convert to a more specfic OMAKEXXX.
+	OMAKECHAN,	// make(chan int)
+	OMAKEMAP,	// make(map[string]int)
+	OMAKESLICE,	// make([]int, 0)
+	OMUL,	// x * y
+	ODIV,	// x / y
+	OMOD,	// x % y
+	OLSH,	// x << u
+	ORSH,	// x >> u
+	OAND,	// x & y
+	OANDNOT,	// x &^ y
+	ONEW,	// new
+	ONOT,	// !b
+	OCOM,	// ^x
+	OPLUS,	// +x
+	OMINUS,	// -y
+	OOROR,	// b1 || b2
+	OPANIC,	// panic
+	OPRINT,	// print
+	OPRINTN,	// println
+	OPAREN,	// (x)
+	OSEND,	// c <- x
+	OSLICE,	// v[1:2], typechecking may convert to a more specfic OSLICEXXX.
+	OSLICEARR,	// a[1:2]
+	OSLICESTR,	// s[1:2]
+	ORECOVER,	// recover
+	ORECV,	// <-c
+	ORUNESTR,	// string(i)
+	OSELRECV,	// case x = <-c:
+	OSELRECV2,	// case x, ok = <-c:
+	OIOTA,	// iota
+	OREAL,	// real
+	OIMAG,	// imag
+	OCOMPLEX,	// complex
 
-	// stmts
-	OBLOCK,
-	OBREAK,
-	OCASE, OXCASE,
-	OCONTINUE,
-	ODEFER,
-	OEMPTY,
-	OFALL, OXFALL,
-	OFOR,
-	OGOTO,
-	OIF,
-	OLABEL,
-	OPROC,
-	ORANGE,
-	ORETURN,
-	OSELECT,
-	OSWITCH,
-	OTYPESW,	// l = r.(type)
+	// statements
+	OBLOCK,	// block of code
+	OBREAK,	// break
+	OCASE,	// case, after being verified by swt.c's casebody.
+	OXCASE,	// case, before verification.
+	OCONTINUE,	// continue
+	ODEFER,	// defer
+	OEMPTY,	// no-op
+	OFALL,	// fallthrough, after being verified by swt.c's casebody.
+	OXFALL,	// fallthrough, before verification.
+	OFOR,	// for
+	OGOTO,	// goto
+	OIF,	// if
+	OLABEL,	// label:
+	OPROC,	// go
+	ORANGE,	// range
+	ORETURN,	// return
+	OSELECT,	// select
+	OSWITCH,	// switch x
+	OTYPESW,	// switch err.(type)
 
 	// types
-	OTCHAN,
-	OTMAP,
-	OTSTRUCT,
-	OTINTER,
-	OTFUNC,
-	OTARRAY,
-	OTPAREN,
+	OTCHAN,	// chan int
+	OTMAP,	// map[string]int
+	OTSTRUCT,	// struct{}
+	OTINTER,	// interface{}
+	OTFUNC,	// func()
+	OTARRAY,	// []int, [8]int, [N]int or [...]int
+	OTPAREN,	// (T)
 
 	// misc
-	ODDD,
-	ODDDARG,
-	OINLCALL,	// intermediary representation of an inlined call
-	OITAB,	// itable word of interface value
+	ODDD,	// func f(args ...int) or f(l...) or var a = [...]int{0, 1, 2}.
+	ODDDARG,	// func f(args ...int), introduced by escape analysis.
+	OINLCALL,	// intermediary representation of an inlined call.
+	OEFACE,	// itable and data words of an empty-interface value.
+	OITAB,	// itable word of an interface value.
+	OCLOSUREVAR, // variable reference at beginning of closure function
+	OCFUNC,	// reference to c function pointer (not go func value)
+	OCHECKNOTNIL, // emit code to ensure pointer/interface not nil
 
-	// for back ends
-	OCMP, ODEC, OEXTEND, OINC, OREGISTER, OINDREG,
+	// arch-specific registers
+	OREGISTER,	// a register, such as AX.
+	OINDREG,	// offset plus indirect of a register, such as 8(SP).
+
+	// 386/amd64-specific opcodes
+	OCMP,	// compare: ACMP.
+	ODEC,	// decrement: ADEC.
+	OINC,	// increment: AINC.
+	OEXTEND,	// extend: ACWD/ACDQ/ACQO.
+	OHMUL, // high mul: AMUL/AIMUL for unsigned/signed (OMUL uses AIMUL for both).
+	OLROT,	// left rotate: AROL.
+	ORROTC, // right rotate-carry: ARCR.
 
 	OEND,
 };
+
 enum
 {
 	Txxx,			// 0
@@ -539,6 +629,7 @@ enum
 
 	NTYPE,
 };
+
 enum
 {
 	CTxxx,
@@ -562,18 +653,21 @@ enum
 	Cboth = Crecv | Csend,
 };
 
+// declaration context
 enum
 {
 	Pxxx,
 
-	PEXTERN,	// declaration context
-	PAUTO,
-	PPARAM,
-	PPARAMOUT,
-	PPARAMREF,	// param passed by reference
-	PFUNC,
+	PEXTERN,	// global variable
+	PAUTO,		// local variables
+	PPARAM,		// input arguments
+	PPARAMOUT,	// output results
+	PPARAMREF,	// closure variable reference
+	PFUNC,		// global function
 
-	PHEAP = 1<<7,
+	PDISCARD,	// discard during parse of duplicate import
+
+	PHEAP = 1<<7,	// an extra bit to identify an escaped variable
 };
 
 enum
@@ -606,7 +700,6 @@ typedef	struct	Var	Var;
 struct	Var
 {
 	vlong	offset;
-	Sym*	gotype;
 	Node*	node;
 	int	width;
 	char	name;
@@ -756,7 +849,7 @@ EXTERN	int	safemode;
 EXTERN	char	namebuf[NSYMB];
 EXTERN	char	lexbuf[NSYMB];
 EXTERN	char	litbuf[NSYMB];
-EXTERN	char	debug[256];
+EXTERN	int	debug[256];
 EXTERN	Sym*	hash[NHASH];
 EXTERN	Sym*	importmyname;	// my name for package
 EXTERN	Pkg*	localpkg;	// package being compiled
@@ -764,11 +857,15 @@ EXTERN	Pkg*	importpkg;	// package being imported
 EXTERN	Pkg*	structpkg;	// package that declared struct, during import
 EXTERN	Pkg*	builtinpkg;	// fake package for builtins
 EXTERN	Pkg*	gostringpkg;	// fake pkg for Go strings
+EXTERN	Pkg*	itabpkg;	// fake pkg for itab cache
 EXTERN	Pkg*	runtimepkg;	// package runtime
+EXTERN	Pkg*	racepkg;	// package runtime/race
 EXTERN	Pkg*	stringpkg;	// fake package for C strings
-EXTERN	Pkg*	typepkg;	// fake package for runtime type info
+EXTERN	Pkg*	typepkg;	// fake package for runtime type info (headers)
+EXTERN	Pkg*	typelinkpkg;	// fake package for runtime type info (data)
 EXTERN	Pkg*	weaktypepkg;	// weak references to runtime type info
 EXTERN	Pkg*	unsafepkg;	// package unsafe
+EXTERN	Pkg*	trackpkg;	// fake package for field tracking
 EXTERN	Pkg*	phash[128];
 EXTERN	int	tptr;		// either TPTR32 or TPTR64
 extern	char*	runtimeimport;
@@ -815,6 +912,7 @@ EXTERN	NodeList*	externdcl;
 EXTERN	NodeList*	closures;
 EXTERN	NodeList*	exportlist;
 EXTERN	NodeList*	importlist;	// imported functions and methods with inlinable bodies
+EXTERN	NodeList*	funcsyms;
 EXTERN	int	dclcontext;		// PEXTERN/PAUTO
 EXTERN	int	incannedimport;
 EXTERN	int	statuniqgen;		// name generator for static temps
@@ -823,8 +921,8 @@ EXTERN	int	loophack;
 EXTERN	int32	iota;
 EXTERN	NodeList*	lastconst;
 EXTERN	Node*	lasttype;
-EXTERN	int32	maxarg;
-EXTERN	int32	stksize;		// stack size for current frame
+EXTERN	vlong	maxarg;
+EXTERN	vlong	stksize;		// stack size for current frame
 EXTERN	int32	blockgen;		// max block number
 EXTERN	int32	block;			// current block number
 EXTERN	int	hasdefer;		// flag that curfn has defer statetment
@@ -832,12 +930,14 @@ EXTERN	int	hasdefer;		// flag that curfn has defer statetment
 EXTERN	Node*	curfn;
 
 EXTERN	int	widthptr;
+EXTERN	int	widthint;
 
 EXTERN	Node*	typesw;
 EXTERN	Node*	nblank;
 
 extern	int	thechar;
 extern	char*	thestring;
+EXTERN	int  	use_sse;
 
 EXTERN	char*	hunk;
 EXTERN	int32	nhunk;
@@ -846,6 +946,14 @@ EXTERN	int32	thunk;
 EXTERN	int	funcdepth;
 EXTERN	int	typecheckok;
 EXTERN	int	compiling_runtime;
+EXTERN	int	compiling_wrappers;
+EXTERN	int	pure_go;
+EXTERN	int	flag_race;
+EXTERN	int	flag_largemodel;
+EXTERN	int	noescape;
+
+EXTERN	int	nointerface;
+EXTERN	int	fieldtrack_enabled;
 
 /*
  *	y.tab.c
@@ -860,7 +968,7 @@ void	checkwidth(Type *t);
 void	defercheckwidth(void);
 void	dowidth(Type *t);
 void	resumecheckwidth(void);
-uint32	rnd(uint32 o, uint32 r);
+vlong	rnd(vlong o, vlong r);
 void	typeinit(void);
 
 /*
@@ -884,7 +992,8 @@ Node*	closurebody(NodeList *body);
 void	closurehdr(Node *ntype);
 void	typecheckclosure(Node *func, int top);
 Node*	walkclosure(Node *func, NodeList **init);
-void	walkcallclosure(Node *n, NodeList **init);
+void	typecheckpartialcall(Node*, Node*);
+Node*	walkpartialcall(Node*, NodeList**);
 
 /*
  *	const.c
@@ -898,9 +1007,11 @@ void	defaultlit(Node **np, Type *t);
 void	defaultlit2(Node **lp, Node **rp, int force);
 void	evconst(Node *n);
 int	isconst(Node *n, int ct);
+int	isgoconst(Node *n);
 Node*	nodcplxlit(Val r, Val i);
 Node*	nodlit(Val v);
 long	nonnegconst(Node *n);
+int	doesoverflow(Val v, Type *t);
 void	overflow(Val v, Type *t);
 int	smallintconst(Node *n);
 Val	toint(Val v);
@@ -910,7 +1021,7 @@ Mpflt*	truncfltlit(Mpflt *oldv, Type *t);
  *	cplx.c
  */
 void	complexadd(int op, Node *nl, Node *nr, Node *res);
-void	complexbool(int op, Node *nl, Node *nr, int true, Prog *to);
+void	complexbool(int op, Node *nl, Node *nr, int true, int likely, Prog *to);
 void	complexgen(Node *n, Node *res);
 void	complexminus(Node *nl, Node *res);
 void	complexmove(Node *f, Node *t);
@@ -921,7 +1032,7 @@ void	nodfconst(Node *n, Type *t, Mpflt* fval);
 /*
  *	dcl.c
  */
-void	addmethod(Sym *sf, Type *t, int local);
+void	addmethod(Sym *sf, Type *t, int local, int nointerface);
 void	addvar(Node *n, Type *t, int ctxt);
 NodeList*	checkarglist(NodeList *all, int input);
 Node*	colas(NodeList *left, NodeList *right, int32 lno);
@@ -954,6 +1065,7 @@ Node*	typedcl0(Sym *s);
 Node*	typedcl1(Node *n, Node *t, int local);
 Node*	typenod(Type *t);
 NodeList*	variter(NodeList *vl, Node *t, NodeList *el);
+Sym*	funcsym(Sym*);
 
 /*
  *	esc.c
@@ -987,9 +1099,11 @@ void	dumplist(char *s, NodeList *l);
 void	addrescapes(Node *n);
 void	cgen_as(Node *nl, Node *nr);
 void	cgen_callmeth(Node *n, int proc);
+void	cgen_eface(Node* n, Node* res);
+void	cgen_slice(Node* n, Node* res);
 void	clearlabels(void);
 void	checklabels(void);
-int	dotoffset(Node *n, int *oary, Node **nn);
+int	dotoffset(Node *n, int64 *oary, Node **nn);
 void	gen(Node *n);
 void	genlist(NodeList *l);
 Node*	sysfunc(char *name);
@@ -1115,8 +1229,11 @@ void	dumptypestructs(void);
 Type*	methodfunc(Type *f, Type*);
 Node*	typename(Type *t);
 Sym*	typesym(Type *t);
+Sym*	typenamesym(Type *t);
+Sym*	tracksym(Type *t);
 Sym*	typesymprefix(char *prefix, Type *t);
 int	haspointers(Type *t);
+void	usefield(Node*);
 
 /*
  *	select.c
@@ -1214,6 +1331,7 @@ Node*	safeexpr(Node *n, NodeList **init);
 void	saveerrors(void);
 Node*	cheapexpr(Node *n, NodeList **init);
 Node*	localexpr(Node *n, Type *t, NodeList **init);
+void	saveorignode(Node *n);
 int32	setlineno(Node *n);
 void	setmaxarg(Type *t);
 Type*	shallow(Type *t);
@@ -1251,6 +1369,7 @@ Node*	typecheck(Node **np, int top);
 void	typechecklist(NodeList *l, int top);
 Node*	typecheckdef(Node *n);
 void	copytype(Node *n, Type *t);
+void	checkreturn(Node*);
 void	queuemethod(Node *n);
 
 /*
@@ -1274,6 +1393,7 @@ void	walkexprlistsafe(NodeList *l, NodeList **init);
 void	walkstmt(Node **np);
 void	walkstmtlist(NodeList *l);
 Node*	conv(Node*, Type*);
+int	candiscard(Node*);
 
 /*
  *	arch-specific ggen.c/gsubr.c/gobj.c/pgen.c
@@ -1302,7 +1422,9 @@ EXTERN	Node*	nodfp;
 
 int	anyregalloc(void);
 void	betypeinit(void);
-void	bgen(Node *n, int true, Prog *to);
+void	bgen(Node *n, int true, int likely, Prog *to);
+void	checkref(Node *n, int force);
+void	checknotnil(Node*, NodeList**);
 void	cgen(Node*, Node*);
 void	cgen_asop(Node *n);
 void	cgen_call(Node *n, int proc);
@@ -1323,8 +1445,8 @@ void	gdata(Node*, Node*, int);
 void	gdatacomplex(Node*, Mpcplx*);
 void	gdatastring(Node*, Strlit*);
 void	genembedtramp(Type*, Type*, Sym*, int iface);
-void	ggloblnod(Node *nam, int32 width);
-void	ggloblsym(Sym *s, int32 width, int dupok);
+void	ggloblnod(Node *nam);
+void	ggloblsym(Sym *s, int32 width, int dupok, int rodata);
 Prog*	gjmp(Prog*);
 void	gused(Node*);
 int	isfat(Type*);
@@ -1364,3 +1486,8 @@ void	zname(Biobuf *b, Sym *s, int t);
 #pragma	varargck	type	"V"	Val*
 #pragma	varargck	type	"Y"	char*
 #pragma	varargck	type	"Z"	Strlit*
+
+/*
+ *	racewalk.c
+ */
+void	racewalk(Node *fn);

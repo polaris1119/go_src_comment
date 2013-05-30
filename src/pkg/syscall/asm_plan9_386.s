@@ -29,7 +29,7 @@ TEXT	·Syscall(SB),7,$0
 	JNE	ok3
 
 	SUBL	$8, SP
-	CALL	syscall·errstr(SB)
+	CALL	runtime·errstr(SB)
 	MOVL	SP, SI
 	ADDL	$8, SP
 	JMP	copyresult3
@@ -67,7 +67,7 @@ TEXT	·Syscall6(SB),7,$0
 	JNE	ok4
 	
 	SUBL	$8, SP
-	CALL	syscall·errstr(SB)
+	CALL	runtime·errstr(SB)
 	MOVL	SP, SI
 	ADDL	$8, SP
 	JMP	copyresult4
@@ -148,4 +148,12 @@ copyresult6:
 	CLD
 	MOVSL
 	MOVSL
+	RET
+
+//func exit(code int)
+// Import runtime·exit for cleanly exiting.
+TEXT ·exit(SB),7,$4
+	MOVL	code+0(FP), AX
+	MOVL	AX, 0(SP)
+	CALL	runtime·exit(SB)
 	RET

@@ -26,7 +26,7 @@ type Cookie struct {
 	Expires    time.Time
 	RawExpires string
 
-	// MaxAge=0 means no 'Max-Age' attribute specified. 
+	// MaxAge=0 means no 'Max-Age' attribute specified.
 	// MaxAge<0 means delete cookie now, equivalently 'Max-Age: 0'
 	// MaxAge>0 means Max-Age attribute present and given in seconds
 	MaxAge   int
@@ -258,10 +258,5 @@ func parseCookieValueUsing(raw string, validByte func(byte) bool) (string, bool)
 }
 
 func isCookieNameValid(raw string) bool {
-	for _, c := range raw {
-		if !isToken(byte(c)) {
-			return false
-		}
-	}
-	return true
+	return strings.IndexFunc(raw, isNotToken) < 0
 }

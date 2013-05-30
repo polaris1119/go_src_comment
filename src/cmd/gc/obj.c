@@ -16,6 +16,8 @@ static	void	dumpglobls(void);
 void
 dumpobj(void)
 {
+	NodeList *externs, *tmp;
+
 	bout = Bopen(outfile, OWRITE);
 	if(bout == nil) {
 		flusherrors();
@@ -31,8 +33,20 @@ dumpobj(void)
 
 	outhist(bout);
 
+	externs = nil;
+	if(externdcl != nil)
+		externs = externdcl->end;
+
 	dumpglobls();
 	dumptypestructs();
+
+	// Dump extra globals.
+	tmp = externdcl;
+	if(externs != nil)
+		externdcl = externs->next;
+	dumpglobls();
+	externdcl = tmp;
+
 	dumpdata();
 	dumpfuncs();
 
@@ -59,7 +73,13 @@ dumpglobls(void)
 			continue;
 		dowidth(n->type);
 
-		ggloblnod(n, n->type->width);
+		ggloblnod(n);
+	}
+
+	for(l=funcsyms; l; l=l->next) {
+		n = l->n;
+		dsymptr(n->sym, 0, n->sym->def->shortname->sym, 0);
+		ggloblsym(n->sym, widthptr, 1, 1);
 	}
 }
 
@@ -302,8 +322,8 @@ stringsym(char *s, int len)
 	off = 0;
 	
 	// string header
-	off = dsymptr(sym, off, sym, widthptr+4);
-	off = duint32(sym, off, len);
+	off = dsymptr(sym, off, sym, widthptr+widthint);
+	off = duintxx(sym, off, len, widthint);
 	
 	// string data
 	for(n=0; n<len; n+=m) {
@@ -314,7 +334,7 @@ stringsym(char *s, int len)
 	}
 	off = duint8(sym, off, 0);  // terminating NUL for runtime
 	off = (off+widthptr-1)&~(widthptr-1);  // round to pointer alignment
-	ggloblsym(sym, off, 1);
+	ggloblsym(sym, off, 1, 1);
 
 	return sym;	
 }

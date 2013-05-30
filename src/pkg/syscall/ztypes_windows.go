@@ -20,6 +20,7 @@ const (
 	ERROR_ENVVAR_NOT_FOUND    Errno = 203
 	ERROR_OPERATION_ABORTED   Errno = 995
 	ERROR_IO_PENDING          Errno = 997
+	ERROR_NOT_FOUND           Errno = 1168
 )
 
 const (
@@ -146,6 +147,7 @@ const (
 	WAIT_OBJECT_0  = 0x00000000
 	WAIT_FAILED    = 0xFFFFFFFF
 
+	CREATE_NEW_PROCESS_GROUP   = 0x00000200
 	CREATE_UNICODE_ENVIRONMENT = 0x00000400
 
 	PROCESS_QUERY_INFORMATION = 0x00000400
@@ -162,6 +164,9 @@ const (
 	FILE_MAP_WRITE   = 0x02
 	FILE_MAP_READ    = 0x04
 	FILE_MAP_EXECUTE = 0x20
+
+	CTRL_C_EVENT     = 0
+	CTRL_BREAK_EVENT = 1
 )
 
 const (
@@ -372,11 +377,9 @@ func copyFindData(dst *Win32finddata, src *win32finddata1) {
 	dst.Reserved0 = src.Reserved0
 	dst.Reserved1 = src.Reserved1
 
-	// The src is 1 element shorter than dst. Zero that last one.
+	// The src is 1 element bigger than dst, but it must be NUL.
 	copy(dst.FileName[:], src.FileName[:])
-	dst.FileName[len(dst.FileName)-1] = 0
 	copy(dst.AlternateFileName[:], src.AlternateFileName[:])
-	src.AlternateFileName[len(dst.AlternateFileName)-1] = 0
 }
 
 type ByHandleFileInformation struct {
@@ -493,15 +496,22 @@ const (
 	IPPROTO_TCP  = 6
 	IPPROTO_UDP  = 17
 
-	SOL_SOCKET               = 0xffff
-	SO_REUSEADDR             = 4
-	SO_KEEPALIVE             = 8
-	SO_DONTROUTE             = 16
-	SO_BROADCAST             = 32
-	SO_LINGER                = 128
-	SO_RCVBUF                = 0x1002
-	SO_SNDBUF                = 0x1001
-	SO_UPDATE_ACCEPT_CONTEXT = 0x700b
+	SOL_SOCKET                = 0xffff
+	SO_REUSEADDR              = 4
+	SO_KEEPALIVE              = 8
+	SO_DONTROUTE              = 16
+	SO_BROADCAST              = 32
+	SO_LINGER                 = 128
+	SO_RCVBUF                 = 0x1002
+	SO_SNDBUF                 = 0x1001
+	SO_UPDATE_ACCEPT_CONTEXT  = 0x700b
+	SO_UPDATE_CONNECT_CONTEXT = 0x7010
+
+	IOC_OUT                            = 0x40000000
+	IOC_IN                             = 0x80000000
+	IOC_INOUT                          = IOC_IN | IOC_OUT
+	IOC_WS2                            = 0x08000000
+	SIO_GET_EXTENSION_FUNCTION_POINTER = IOC_INOUT | IOC_WS2 | 6
 
 	// cf. http://support.microsoft.com/default.aspx?scid=kb;en-us;257460
 
@@ -921,3 +931,34 @@ const (
 	REG_DWORD = REG_DWORD_LITTLE_ENDIAN
 	REG_QWORD = REG_QWORD_LITTLE_ENDIAN
 )
+
+type AddrinfoW struct {
+	Flags     int32
+	Family    int32
+	Socktype  int32
+	Protocol  int32
+	Addrlen   uintptr
+	Canonname *uint16
+	Addr      uintptr
+	Next      *AddrinfoW
+}
+
+const (
+	AI_PASSIVE     = 1
+	AI_CANONNAME   = 2
+	AI_NUMERICHOST = 4
+)
+
+type GUID struct {
+	Data1 uint32
+	Data2 uint16
+	Data3 uint16
+	Data4 [8]byte
+}
+
+var WSAID_CONNECTEX = GUID{
+	0x25a207b9,
+	0xddf3,
+	0x4660,
+	[8]byte{0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e},
+}

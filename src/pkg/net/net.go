@@ -44,6 +44,10 @@ package net
 
 import (
 	"errors"
+	"io"
+	"os"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -102,6 +106,105 @@ type Conn interface {
 	// A zero value for t means Write will not time out.
 	SetWriteDeadline(t time.Time) error
 }
+
+type conn struct {
+	fd *netFD
+}
+
+func (c *conn) ok() bool { return c != nil && c.fd != nil }
+
+// Implementation of the Conn interface.
+
+// Read implements the Conn Read method.
+func (c *conn) Read(b []byte) (int, error) {
+	if !c.ok() {
+		return 0, syscall.EINVAL
+	}
+	return c.fd.Read(b)
+}
+
+// Write implements the Conn Write method.
+func (c *conn) Write(b []byte) (int, error) {
+	if !c.ok() {
+		return 0, syscall.EINVAL
+	}
+	return c.fd.Write(b)
+}
+
+// Close closes the connection.
+func (c *conn) Close() error {
+	if !c.ok() {
+		return syscall.EINVAL
+	}
+	return c.fd.Close()
+}
+
+// LocalAddr returns the local network address.
+func (c *conn) LocalAddr() Addr {
+	if !c.ok() {
+		return nil
+	}
+	return c.fd.laddr
+}
+
+// RemoteAddr returns the remote network address.
+func (c *conn) RemoteAddr() Addr {
+	if !c.ok() {
+		return nil
+	}
+	return c.fd.raddr
+}
+
+// SetDeadline implements the Conn SetDeadline method.
+func (c *conn) SetDeadline(t time.Time) error {
+	if !c.ok() {
+		return syscall.EINVAL
+	}
+	return setDeadline(c.fd, t)
+}
+
+// SetReadDeadline implements the Conn SetReadDeadline method.
+func (c *conn) SetReadDeadline(t time.Time) error {
+	if !c.ok() {
+		return syscall.EINVAL
+	}
+	return setReadDeadline(c.fd, t)
+}
+
+// SetWriteDeadline implements the Conn SetWriteDeadline method.
+func (c *conn) SetWriteDeadline(t time.Time) error {
+	if !c.ok() {
+		return syscall.EINVAL
+	}
+	return setWriteDeadline(c.fd, t)
+}
+
+// SetReadBuffer sets the size of the operating system's
+// receive buffer associated with the connection.
+func (c *conn) SetReadBuffer(bytes int) error {
+	if !c.ok() {
+		return syscall.EINVAL
+	}
+	return setReadBuffer(c.fd, bytes)
+}
+
+// SetWriteBuffer sets the size of the operating system's
+// transmit buffer associated with the connection.
+func (c *conn) SetWriteBuffer(bytes int) error {
+	if !c.ok() {
+		return syscall.EINVAL
+	}
+	return setWriteBuffer(c.fd, bytes)
+}
+
+// File sets the underlying os.File to blocking mode and returns a copy.
+// It is the caller's responsibility to close f when finished.
+// Closing c does not affect f, and closing f does not affect c.
+//
+// The returned os.File's file descriptor is different from the connection's.
+// Attempting to change properties of the original using this duplicate
+// may or may not have the desired effect.
+func (c *conn) File() (f *os.File, err error) { return c.fd.dup() }
 
 // An Error represents a network error.
 type Error interface {
@@ -173,11 +276,23 @@ type Listener interface {
 
 var errMissingAddress = errors.New("missing address")
 
+// OpError is the error type usually returned by functions in the net
+// package. It describes the operation, network type, and address of
+// an error.
 type OpError struct {
-	Op   string
-	Net  string
+	// Op is the operation which caused the error, such as
+	// "read" or "write".
+	Op string
+
+	// Net is the network type on which this error occurred,
+	// such as "tcp" or "udp6".
+	Net string
+
+	// Addr is the network address on which this error occurred.
 	Addr Addr
-	Err  error
+
+	// Err is the error that occurred during the operation.
+	Err error
 }
 
 func (e *OpError) Error() string {
@@ -204,6 +319,8 @@ func (e *OpError) Temporary() bool {
 	return ok && t.Temporary()
 }
 
+var noDeadline = time.Time{}
+
 type timeout interface {
 	Timeout() bool
 }
@@ -220,6 +337,8 @@ func (e *timeoutError) Timeout() bool   { return true }
 func (e *timeoutError) Temporary() bool { return true }
 
 var errTimeout error = &timeoutError{}
+
+var errClosing = errors.New("use of closed network connection")
 
 type AddrError struct {
 	Err  string
@@ -262,3 +381,47 @@ func (e *DNSConfigError) Error() string {
 
 func (e *DNSConfigError) Timeout() bool   { return false }
 func (e *DNSConfigError) Temporary() bool { return false }
+
+type writerOnly struct {
+	io.Writer
+}
+
+// Fallback implementation of io.ReaderFrom's ReadFrom, when sendfile isn't
+// applicable.
+func genericReadFrom(w io.Writer, r io.Reader) (n int64, err error) {
+	// Use wrapper to hide existing r.ReadFrom from io.Copy.
+	return io.Copy(writerOnly{w}, r)
+}
+
+// deadline is an atomically-accessed number of nanoseconds since 1970
+// or 0, if no deadline is set.
+type deadline struct {
+	sync.Mutex
+	val int64
+}
+
+func (d *deadline) expired() bool {
+	t := d.value()
+	return t > 0 && time.Now().UnixNano() >= t
+}
+
+func (d *deadline) value() (v int64) {
+	d.Lock()
+	v = d.val
+	d.Unlock()
+	return
+}
+
+func (d *deadline) set(v int64) {
+	d.Lock()
+	d.val = v
+	d.Unlock()
+}
+
+func (d *deadline) setTime(t time.Time) {
+	if t.IsZero() {
+		d.set(0)
+	} else {
+		d.set(t.UnixNano())
+	}
+}

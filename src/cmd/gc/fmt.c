@@ -168,7 +168,7 @@ Lconv(Fmt *fp)
 		lno = a[i].incl->line - 1;	// now print out start of this file
 	}
 	if(n == 0)
-		fmtprint(fp, "<epoch>");
+		fmtprint(fp, "<unknown line number>");
 
 	return 0;
 }
@@ -228,6 +228,7 @@ goopnames[] =
 	[ORANGE]	= "range",
 	[OREAL]		= "real",
 	[ORECV]		= "<-",
+	[ORECOVER]	= "recover",
 	[ORETURN]	= "return",
 	[ORSH]		= ">>",
 	[OSELECT]	= "select",
@@ -289,7 +290,7 @@ Jconv(Fmt *fp)
 		fmtprint(fp, " l(%d)", n->lineno);
 
 	if(!c && n->xoffset != BADWIDTH)
-		fmtprint(fp, " x(%lld%+d)", n->xoffset, n->stkdelta);
+		fmtprint(fp, " x(%lld%+lld)", n->xoffset, n->stkdelta);
 
 	if(n->class != 0) {
 		s = "";
@@ -361,6 +362,8 @@ Vconv(Fmt *fp)
 
 	switch(v->ctype) {
 	case CTINT:
+		if((fp->flags & FmtSharp) || fmtmode == FExp)
+			return fmtprint(fp, "%#B", v->u.xval);
 		return fmtprint(fp, "%B", v->u.xval);
 	case CTRUNE:
 		x = mpgetfix(v->u.xval);
@@ -377,8 +380,14 @@ Vconv(Fmt *fp)
 		return fmtprint(fp, "%#F", v->u.fval);
 	case CTCPLX:
 		if((fp->flags & FmtSharp) || fmtmode == FExp)
-			return fmtprint(fp, "(%F+%F)", &v->u.cval->real, &v->u.cval->imag);
-		return fmtprint(fp, "(%#F + %#Fi)", &v->u.cval->real, &v->u.cval->imag);
+			return fmtprint(fp, "(%F+%Fi)", &v->u.cval->real, &v->u.cval->imag);
+		if(mpcmpfltc(&v->u.cval->real, 0) == 0)
+			return fmtprint(fp, "%#Fi", &v->u.cval->imag);
+		if(mpcmpfltc(&v->u.cval->imag, 0) == 0)
+			return fmtprint(fp, "%#F", &v->u.cval->real);
+		if(mpcmpfltc(&v->u.cval->imag, 0) < 0)
+			return fmtprint(fp, "(%#F%#Fi)", &v->u.cval->real, &v->u.cval->imag);
+		return fmtprint(fp, "(%#F+%#Fi)", &v->u.cval->real, &v->u.cval->imag);
 	case CTSTR:
 		return fmtprint(fp, "\"%Z\"", v->u.sval);
 	case CTBOOL:
@@ -388,7 +397,7 @@ Vconv(Fmt *fp)
 	case CTNIL:
 		return fmtstrcpy(fp, "nil");
 	}
-	return fmtprint(fp, "<%d>", v->ctype);
+	return fmtprint(fp, "<ctype=%d>", v->ctype);
 }
 
 // Fmt "%Z": escaped string literals
@@ -433,6 +442,9 @@ Zconv(Fmt *fp)
 		case '\\':
 			fmtrune(fp, '\\');
 			fmtrune(fp, r);
+			break;
+		case 0xFEFF: // BOM, basically disallowed in source code
+			fmtstrcpy(fp, "\\uFEFF");
 			break;
 		}
 	}
@@ -516,6 +528,8 @@ symfmt(Fmt *fp, Sym *s)
 				return fmtprint(fp, "%s.%s", s->pkg->name, s->name);	// dcommontype, typehash
 			return fmtprint(fp, "%s.%s", s->pkg->prefix, s->name);	// (methodsym), typesym, weaksym
 		case FExp:
+			if(s->name && s->name[0] == '.')
+				fatal("exporting synthetic symbol %s", s->name);
 			if(s->pkg != builtinpkg)
 				return fmtprint(fp, "@\"%Z\".%s", s->pkg->path, s->name);
 		}
@@ -619,7 +633,7 @@ typefmt(Fmt *fp, Type *t)
 
 	case TARRAY:
 		if(t->bound >= 0)
-			return fmtprint(fp, "[%d]%T", (int)t->bound, t->type);
+			return fmtprint(fp, "[%lld]%T", t->bound, t->type);
 		if(t->bound == -100)
 			return fmtprint(fp, "[...]%T", t->type);
 		return fmtprint(fp, "[]%T", t->type);
@@ -711,12 +725,21 @@ typefmt(Fmt *fp, Type *t)
 	case TFIELD:
 		if(!(fp->flags&FmtShort)) {
 			s = t->sym;
-			// Take the name from the original, lest we substituted it with .anon%d
-			if (t->nname && (fmtmode == FErr || fmtmode == FExp))
-				s = t->nname->orig->sym;
+
+			// Take the name from the original, lest we substituted it with ~anon%d
+			if ((fmtmode == FErr || fmtmode == FExp) && t->nname != N) {
+				if(t->nname->orig != N) {
+					s = t->nname->orig->sym;
+					if(s != S && s->name[0] == '~')
+						s = S;
+				} else 
+					s = S;
+			}
 			
 			if(s != S && !t->embedded) {
-				if(fp->flags&FmtLong)
+				if(t->funarg)
+					fmtprint(fp, "%N ", t->nname);
+				else if(fp->flags&FmtLong)
 					fmtprint(fp, "%hhS ", s);  // qualify non-exported names (used on structs, not on funarg)
 				else 
 					fmtprint(fp, "%S ", s);
@@ -794,6 +817,15 @@ stmtfmt(Fmt *f, Node *n)
 
 	switch(n->op){
 	case ODCL:
+		if(fmtmode == FExp) {
+			switch(n->left->class&~PHEAP) {
+			case PPARAM:
+			case PPARAMOUT:
+			case PAUTO:
+				fmtprint(f, "var %N %T", n->left, n->left->type);
+				goto ret;
+			}
+		}			
 		fmtprint(f, "var %S %T", n->left->sym, n->left->type);
 		break;
 
@@ -805,6 +837,12 @@ stmtfmt(Fmt *f, Node *n)
 		break;
 
 	case OAS:
+		// Don't export "v = <N>" initializing statements, hope they're always 
+		// preceded by the DCL which will be re-parsed and typecheck to reproduce
+		// the "v = <N>" again.
+		if(fmtmode == FExp && n->right == N)
+			break;
+
 		if(n->colas && !complexinit)
 			fmtprint(f, "%N := %N", n->left, n->right);
 		else
@@ -925,6 +963,7 @@ stmtfmt(Fmt *f, Node *n)
 		break;
 	  
 	}
+ret:
 
 	if(extrablock)
 		fmtstrcpy(f, "}");
@@ -986,6 +1025,7 @@ static int opprec[] = {
 	[ODOTTYPE] = 8,
 	[ODOT] = 8,
 	[OXDOT] = 8,
+	[OCALLPART] = 8,
 
 	[OPLUS] = 7,
 	[ONOT] = 7,
@@ -1055,8 +1095,8 @@ static int
 exprfmt(Fmt *f, Node *n, int prec)
 {
 	int nprec;
+	int ptrlit;
 	NodeList *l;
-	Type *t;
 
 	while(n && n->implicit && (n->op == OIND || n->op == OADDR))
 		n = n->left;
@@ -1084,9 +1124,9 @@ exprfmt(Fmt *f, Node *n, int prec)
 	case OLITERAL:  // this is a bit of a mess
 		if(fmtmode == FErr && n->sym != S)
 			return fmtprint(f, "%S", n->sym);
-		if(n->val.ctype == CTNIL)
-			n = n->orig; // if this node was a nil decorated with at type, print the original naked nil
-		if(n->type != types[n->type->etype] && n->type != idealbool && n->type != idealstring) {
+		if(n->val.ctype == CTNIL && n->orig != N && n->orig != n)
+			return exprfmt(f, n->orig, prec);
+		if(n->type != T && n->type != types[n->type->etype] && n->type != idealbool && n->type != idealstring) {
 			// Need parens when type begins with what might
 			// be misinterpreted as a unary operator: * or <-.
 			if(isptr[n->type->etype] || (n->type->etype == TCHAN && n->type->chan == Crecv))
@@ -1097,6 +1137,15 @@ exprfmt(Fmt *f, Node *n, int prec)
 		return fmtprint(f, "%V", &n->val);
 
 	case ONAME:
+		// Special case: name used as local variable in export.
+		switch(n->class&~PHEAP){
+		case PAUTO:
+		case PPARAM:
+		case PPARAMOUT:
+			if(fmtmode == FExp && n->sym && !isblanksym(n->sym) && n->vargen > 0)
+				return fmtprint(f, "%S·%d", n->sym, n->vargen);
+		}
+
 		// Special case: explicit name of func (*T) method(...) is turned into pkg.(*T).method,
 		// but for export, this should be rendered as (*pkg.T).meth.
 		// These nodes have the special property that they are names with a left OTYPE and a right ONAME.
@@ -1152,12 +1201,25 @@ exprfmt(Fmt *f, Node *n, int prec)
 	case OCLOSURE:
 		if(fmtmode == FErr)
 			return fmtstrcpy(f, "func literal");
-		return fmtprint(f, "%T { %H }", n->type, n->nbody);
+		if(n->nbody)
+			return fmtprint(f, "%T { %H }", n->type, n->nbody);
+		return fmtprint(f, "%T { %H }", n->type, n->closure->nbody);
 
 	case OCOMPLIT:
-		if(fmtmode == FErr)
+		ptrlit = n->right != N && n->right->implicit && n->right->type && isptr[n->right->type->etype];
+		if(fmtmode == FErr) {
+			if(n->right != N && n->right->type != T && !n->implicit) {
+				if(ptrlit)
+					return fmtprint(f, "&%T literal", n->right->type->type);
+				else
+					return fmtprint(f, "%T literal", n->right->type);
+			}
 			return fmtstrcpy(f, "composite literal");
-		return fmtprint(f, "%N{ %,H }", n->right, n->list);
+		}
+		if(fmtmode == FExp && ptrlit)
+			// typecheck has overwritten OIND by OTYPE with pointer type.
+			return fmtprint(f, "&%T{ %,H }", n->right->type->type, n->list);
+		return fmtprint(f, "(%N{ %,H })", n->right, n->list);
 
 	case OPTRLIT:
 		if(fmtmode == FExp && n->left->implicit)
@@ -1168,24 +1230,18 @@ exprfmt(Fmt *f, Node *n, int prec)
 		if(fmtmode == FExp) {   // requires special handling of field names
 			if(n->implicit)
 				fmtstrcpy(f, "{");
-			else 
-				fmtprint(f, "%T{", n->type);
+			else
+				fmtprint(f, "(%T{", n->type);
 			for(l=n->list; l; l=l->next) {
-				// another special case: if n->left is an embedded field of builtin type,
-				// it needs to be non-qualified.  Can't figure that out in %S, so do it here
-				if(l->n->left->type->embedded) {
-					t = l->n->left->type->type;
-					if(t->sym == S)
-						t = t->type;
-					fmtprint(f, " %T:%N", t, l->n->right);
-				} else
-					fmtprint(f, " %hhS:%N", l->n->left->sym, l->n->right);
+				fmtprint(f, " %hhS:%N", l->n->left->sym, l->n->right);
 
 				if(l->next)
 					fmtstrcpy(f, ",");
 				else
 					fmtstrcpy(f, " ");
 			}
+			if(!n->implicit)
+				return fmtstrcpy(f, "})");
 			return fmtstrcpy(f, "}");
 		}
 		// fallthrough
@@ -1196,11 +1252,16 @@ exprfmt(Fmt *f, Node *n, int prec)
 			return fmtprint(f, "%T literal", n->type);
 		if(fmtmode == FExp && n->implicit)
 			return fmtprint(f, "{ %,H }", n->list);
-		return fmtprint(f, "%T{ %,H }", n->type, n->list);
+		return fmtprint(f, "(%T{ %,H })", n->type, n->list);
 
 	case OKEY:
-		if(n->left && n->right)
-			return fmtprint(f, "%N:%N", n->left, n->right);
+		if(n->left && n->right) {
+			if(fmtmode == FExp && n->left->type && n->left->type->etype == TFIELD) {
+				// requires special handling of field names
+				return fmtprint(f, "%hhS:%N", n->left->sym, n->right);
+			} else
+				return fmtprint(f, "%N:%N", n->left, n->right);
+		}
 		if(!n->left && n->right)
 			return fmtprint(f, ":%N", n->right);
 		if(n->left && !n->right)
@@ -1212,9 +1273,10 @@ exprfmt(Fmt *f, Node *n, int prec)
 	case ODOTPTR:
 	case ODOTINTER:
 	case ODOTMETH:
+	case OCALLPART:
 		exprfmt(f, n->left, nprec);
 		if(n->right == N || n->right->sym == S)
-			fmtstrcpy(f, ".<nil>");
+			return fmtstrcpy(f, ".<nil>");
 		return fmtprint(f, ".%hhS", n->right->sym);
 
 	case ODOTTYPE:
@@ -1260,6 +1322,7 @@ exprfmt(Fmt *f, Node *n, int prec)
 	case OMAKE:
 	case ONEW:
 	case OPANIC:
+	case ORECOVER:
 	case OPRINT:
 	case OPRINTN:
 		if(n->left)
@@ -1408,6 +1471,7 @@ nodedump(Fmt *fp, Node *n)
 		fmtprint(fp, "%O%J", n->op, n);
 		break;
 	case OREGISTER:
+	case OINDREG:
 		fmtprint(fp, "%O-%R%J", n->op, n->val.u.reg, n);
 		break;
 	case OLITERAL:
@@ -1419,6 +1483,10 @@ nodedump(Fmt *fp, Node *n)
 			fmtprint(fp, "%O-%S%J", n->op, n->sym, n);
 		else
 			fmtprint(fp, "%O%J", n->op, n);
+		if(recur && n->type == T && n->ntype) {
+			indent(fp);
+			fmtprint(fp, "%O-ntype%N", n->op, n->ntype);
+		}
 		break;
 	case OASOP:
 		fmtprint(fp, "%O-%O%J", n->op, n->etype, n);
@@ -1629,11 +1697,11 @@ fmtinstallgo(void)
 void
 dumplist(char *s, NodeList *l)
 {
-	print("%s\n%+H\n", s, l);
+	print("%s%+H\n", s, l);
 }
 
 void
 dump(char *s, Node *n)
 {
-	print("%s [%p]\n%+N\n", s, n, n);
+	print("%s [%p]%+N\n", s, n, n);
 }

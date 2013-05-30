@@ -28,5 +28,8 @@ uint32 runtime·ctrlhandler(uint32 type);
 byte *runtime·compilecallback(Eface fn, bool cleanstack);
 void *runtime·callbackasm(void);
 
+void runtime·install_exception_handler(void);
+void runtime·remove_exception_handler(void);
+
 // TODO(brainman): should not need those
 #define	NSIG	65

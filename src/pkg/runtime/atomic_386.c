@@ -17,3 +17,29 @@ runtime·atomicloadp(void* volatile* addr)
 {
 	return *addr;
 }
+
+#pragma textflag 7
+uint64
+runtime·xadd64(uint64 volatile* addr, int64 v)
+{
+	uint64 old;
+
+	old = *addr;
+	while(!runtime·cas64(addr, &old, old+v)) {
+		// nothing
+	}
+	return old+v;
+}
+
+#pragma textflag 7
+uint64
+runtime·xchg64(uint64 volatile* addr, uint64 v)
+{
+	uint64 old;
+
+	old = *addr;
+	while(!runtime·cas64(addr, &old, v)) {
+		// nothing
+	}
+	return old;
+}

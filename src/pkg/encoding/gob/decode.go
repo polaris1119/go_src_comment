@@ -62,15 +62,15 @@ func overflow(name string) error {
 // Used only by the Decoder to read the message length.
 func decodeUintReader(r io.Reader, buf []byte) (x uint64, width int, err error) {
 	width = 1
-	_, err = r.Read(buf[0:width])
-	if err != nil {
+	n, err := io.ReadFull(r, buf[0:width])
+	if n == 0 {
 		return
 	}
 	b := buf[0]
 	if b <= 0x7f {
 		return uint64(b), width, nil
 	}
-	n := -int(int8(b))
+	n = -int(int8(b))
 	if n > uint64Size {
 		err = errBadUint
 		return
@@ -717,7 +717,9 @@ func (dec *Decoder) decodeInterface(ityp reflect.Type, state *decoderState, p ui
 		errorf("name too long (%d bytes): %.20q...", len(name), name)
 	}
 	// The concrete type must be registered.
+	registerLock.RLock()
 	typ, ok := nameToConcreteType[name]
+	registerLock.RUnlock()
 	if !ok {
 		errorf("name not registered for interface: %q", name)
 	}
@@ -1064,7 +1066,6 @@ func (dec *Decoder) compatibleType(fr reflect.Type, fw typeId, inProgress map[re
 	case reflect.Struct:
 		return true
 	}
-	return true
 }
 
 // typeString returns a human-readable description of the type identified by remoteId.

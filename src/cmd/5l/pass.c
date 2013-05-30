@@ -119,7 +119,7 @@ loop:
 				i--;
 				continue;
 			}
-			if(a == AB || (a == ARET && q->scond == 14) || a == ARFE)
+			if(a == AB || (a == ARET && q->scond == 14) || a == ARFE || a == AUNDEF)
 				goto copy;
 			if(q->cond == P || (q->cond->mark&FOLL))
 				continue;
@@ -140,7 +140,7 @@ loop:
 				}
 				(*last)->link = r;
 				*last = r;
-				if(a == AB || (a == ARET && q->scond == 14) || a == ARFE)
+				if(a == AB || (a == ARET && q->scond == 14) || a == ARFE || a == AUNDEF)
 					return;
 				r->as = ABNE;
 				if(a == ABNE)
@@ -166,7 +166,7 @@ loop:
 	p->mark |= FOLL;
 	(*last)->link = p;
 	*last = p;
-	if(a == AB || (a == ARET && p->scond == 14) || a == ARFE){
+	if(a == AB || (a == ARET && p->scond == 14) || a == ARFE || a == AUNDEF){
 		return;
 	}
 	if(p->cond != P)
@@ -215,7 +215,7 @@ patch(void)
 				s = p->to.sym;
 				if(s->text == nil)
 					continue;
-				switch(s->type) {
+				switch(s->type&SMASK) {
 				default:
 					diag("undefined: %s", s->name);
 					s->type = STEXT;
@@ -231,7 +231,7 @@ patch(void)
 			if(p->to.type != D_BRANCH)
 				continue;
 			c = p->to.offset;
-			for(q = textp->text; q != P;) {
+			for(q = cursym->text; q != P;) {
 				if(c == q->pc)
 					break;
 				if(q->forwd != P && c >= q->forwd->pc)
@@ -332,4 +332,71 @@ rnd(int32 v, int32 r)
 		c += r;
 	v -= c;
 	return v;
+}
+
+void
+dozerostk(void)
+{
+	Prog *p, *pl;
+	int32 autoffset;
+
+	for(cursym = textp; cursym != nil; cursym = cursym->next) {
+		if(cursym->text == nil || cursym->text->link == nil)
+			continue;				
+		p = cursym->text;
+		autoffset = p->to.offset;
+		if(autoffset < 0)
+			autoffset = 0;
+		if(autoffset && !(p->reg&NOSPLIT)) {
+			// MOVW $4(R13), R1
+			p = appendp(p);
+			p->as = AMOVW;
+			p->from.type = D_CONST;
+			p->from.reg = 13;
+			p->from.offset = 4;
+			p->to.type = D_REG;
+			p->to.reg = 1;
+
+			// MOVW $n(R13), R2
+			p = appendp(p);
+			p->as = AMOVW;
+			p->from.type = D_CONST;
+			p->from.reg = 13;
+			p->from.offset = 4 + autoffset;
+			p->to.type = D_REG;
+			p->to.reg = 2;
+
+			// MOVW $0, R3
+			p = appendp(p);
+			p->as = AMOVW;
+			p->from.type = D_CONST;
+			p->from.offset = 0;
+			p->to.type = D_REG;
+			p->to.reg = 3;
+
+			// L:
+			//	MOVW.P R3, 0(R1) +4
+			//	CMP R1, R2
+			//	BNE L
+			p = pl = appendp(p);
+			p->as = AMOVW;
+			p->from.type = D_REG;
+			p->from.reg = 3;
+			p->to.type = D_OREG;
+			p->to.reg = 1;
+			p->to.offset = 4;
+			p->scond |= C_PBIT;
+
+			p = appendp(p);
+			p->as = ACMP;
+			p->from.type = D_REG;
+			p->from.reg = 1;
+			p->reg = 2;
+
+			p = appendp(p);
+			p->as = ABNE;
+			p->to.type = D_BRANCH;
+			p->cond = pl;
+		}
+	}
 }

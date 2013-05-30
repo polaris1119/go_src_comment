@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/rpc"
 	"testing"
@@ -23,6 +24,12 @@ type Reply struct {
 }
 
 type Arith int
+
+type ArithAddResp struct {
+	Id     interface{} `json:"id"`
+	Result Reply       `json:"result"`
+	Error  interface{} `json:"error"`
+}
 
 func (t *Arith) Add(args *Args, reply *Reply) error {
 	reply.C = args.A + args.B
@@ -50,13 +57,39 @@ func init() {
 	rpc.Register(new(Arith))
 }
 
-func TestServer(t *testing.T) {
-	type addResp struct {
-		Id     interface{} `json:"id"`
-		Result Reply       `json:"result"`
-		Error  interface{} `json:"error"`
-	}
+func TestServerNoParams(t *testing.T) {
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	go ServeConn(srv)
+	dec := json.NewDecoder(cli)
 
+	fmt.Fprintf(cli, `{"method": "Arith.Add", "id": "123"}`)
+	var resp ArithAddResp
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("Decode after no params: %s", err)
+	}
+	if resp.Error == nil {
+		t.Fatalf("Expected error, got nil")
+	}
+}
+
+func TestServerEmptyMessage(t *testing.T) {
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	go ServeConn(srv)
+	dec := json.NewDecoder(cli)
+
+	fmt.Fprintf(cli, "{}")
+	var resp ArithAddResp
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("Decode after empty: %s", err)
+	}
+	if resp.Error == nil {
+		t.Fatalf("Expected error, got nil")
+	}
+}
+
+func TestServer(t *testing.T) {
 	cli, srv := net.Pipe()
 	defer cli.Close()
 	go ServeConn(srv)
@@ -65,7 +98,7 @@ func TestServer(t *testing.T) {
 	// Send hand-coded requests to server, parse responses.
 	for i := 0; i < 10; i++ {
 		fmt.Fprintf(cli, `{"method": "Arith.Add", "id": "\u%04d", "params": [{"A": %d, "B": %d}]}`, i, i, i+1)
-		var resp addResp
+		var resp ArithAddResp
 		err := dec.Decode(&resp)
 		if err != nil {
 			t.Fatalf("Decode: %s", err)
@@ -79,15 +112,6 @@ func TestServer(t *testing.T) {
 		if resp.Result.C != 2*i+1 {
 			t.Fatalf("resp: bad result: %d+%d=%d", i, i+1, resp.Result.C)
 		}
-	}
-
-	fmt.Fprintf(cli, "{}\n")
-	var resp addResp
-	if err := dec.Decode(&resp); err != nil {
-		t.Fatalf("Decode after empty: %s", err)
-	}
-	if resp.Error == nil {
-		t.Fatalf("Expected error, got nil")
 	}
 }
 
@@ -160,6 +184,22 @@ func TestMalformedInput(t *testing.T) {
 	cli, srv := net.Pipe()
 	go cli.Write([]byte(`{id:1}`)) // invalid json
 	ServeConn(srv)                 // must return, not loop
+}
+
+func TestMalformedOutput(t *testing.T) {
+	cli, srv := net.Pipe()
+	go srv.Write([]byte(`{"id":0,"result":null,"error":null}`))
+	go ioutil.ReadAll(srv)
+
+	client := NewClient(cli)
+	defer client.Close()
+
+	args := &Args{7, 8}
+	reply := new(Reply)
+	err := client.Call("Arith.Add", args, reply)
+	if err == nil {
+		t.Error("expected error")
+	}
 }
 
 func TestUnexpectedError(t *testing.T) {

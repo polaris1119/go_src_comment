@@ -68,7 +68,7 @@ func TestParseDir(t *testing.T) {
 
 func TestParseExpr(t *testing.T) {
 	// just kicking the tires:
-	// a valid expression
+	// a valid arithmetic expression
 	src := "a + b"
 	x, err := ParseExpr(src)
 	if err != nil {
@@ -77,6 +77,17 @@ func TestParseExpr(t *testing.T) {
 	// sanity check
 	if _, ok := x.(*ast.BinaryExpr); !ok {
 		t.Errorf("ParseExpr(%s): got %T, expected *ast.BinaryExpr", src, x)
+	}
+
+	// a valid type expression
+	src = "struct{x *int}"
+	x, err = ParseExpr(src)
+	if err != nil {
+		t.Fatalf("ParseExpr(%s): %v", src, err)
+	}
+	// sanity check
+	if _, ok := x.(*ast.StructType); !ok {
+		t.Errorf("ParseExpr(%s): got %T, expected *ast.StructType", src, x)
 	}
 
 	// an invalid expression
@@ -133,6 +144,53 @@ func TestVarScope(t *testing.T) {
 			t.Errorf("lhs %s does not have Obj, should", id.Name)
 		}
 	}
+}
+
+func TestObjects(t *testing.T) {
+	const src = `
+package p
+import fmt "fmt"
+const pi = 3.14
+type T struct{}
+var x int
+func f() { L: }
+`
+
+	f, err := ParseFile(fset, "", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	objects := map[string]ast.ObjKind{
+		"p":   ast.Bad, // not in a scope
+		"fmt": ast.Bad, // not resolved yet
+		"pi":  ast.Con,
+		"T":   ast.Typ,
+		"x":   ast.Var,
+		"int": ast.Bad, // not resolved yet
+		"f":   ast.Fun,
+		"L":   ast.Lbl,
+	}
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		if ident, ok := n.(*ast.Ident); ok {
+			obj := ident.Obj
+			if obj == nil {
+				if objects[ident.Name] != ast.Bad {
+					t.Errorf("no object for %s", ident.Name)
+				}
+				return true
+			}
+			if obj.Name != ident.Name {
+				t.Errorf("names don't match: obj.Name = %s, ident.Name = %s", obj.Name, ident.Name)
+			}
+			kind := objects[ident.Name]
+			if obj.Kind != kind {
+				t.Errorf("%s: obj.Kind = %s; want %s", ident.Name, obj.Kind, kind)
+			}
+		}
+		return true
+	})
 }
 
 func TestUnresolved(t *testing.T) {

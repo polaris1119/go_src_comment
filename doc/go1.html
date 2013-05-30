@@ -618,8 +618,6 @@ The packages in their new locations are:
 
 <ul>
 <li><code>old/netchan</code></li>
-<li><code>old/regexp</code></li>
-<li><code>old/template</code></li>
 </ul>
 
 <p>
@@ -639,6 +637,8 @@ Go 1 deletes several packages outright:
 <li><code>container/vector</code></li>
 <li><code>exp/datafmt</code></li>
 <li><code>go/typechecker</code></li>
+<li><code>old/regexp</code></li>
+<li><code>old/template</code></li>
 <li><code>try</code></li>
 </ul>
 
@@ -998,9 +998,9 @@ Running <code>go</code> <code>fix</code> will perform the needed changes.
 <p>
 In Go 1, the
 <a href="/pkg/crypto/x509/#CreateCertificate"><code>CreateCertificate</code></a>
-and
-<a href="/pkg/crypto/x509/#CreateCRL"><code>CreateCRL</code></a>
-functions in <code>crypto/x509</code> have been altered to take an
+function and
+<a href="/pkg/crypto/x509/#Certificate.CreateCRL"><code>CreateCRL</code></a>
+method in <code>crypto/x509</code> have been altered to take an
 <code>interface{}</code> where they previously took a <code>*rsa.PublicKey</code>
 or <code>*rsa.PrivateKey</code>. This will allow other public key algorithms
 to be implemented in the future.
@@ -1183,7 +1183,7 @@ if set to <a href="/pkg/go/doc/#AllDecls"><code>AllDecls</code></a>, all declara
 (not just exported ones) are considered.
 The function <code>NewFileDoc</code> was removed, and the function
 <code>CommentText</code> has become the method
-<a href="/pkg/go/ast/#Text"><code>Text</code></a> of
+<a href="/pkg/go/ast/#CommentGroup.Text"><code>Text</code></a> of
 <a href="/pkg/go/ast/#CommentGroup"><code>ast.CommentGroup</code></a>.
 </p>
 
@@ -1497,7 +1497,7 @@ to test common error properties, plus a few new error values
 with more Go-like names, such as
 <a href="/pkg/os/#ErrPermission"><code>ErrPermission</code></a>
 and
-<a href="/pkg/os/#ErrNoEnv"><code>ErrNoEnv</code></a>.
+<a href="/pkg/os/#ErrNotExist"><code>ErrNotExist</code></a>.
 </p>
 
 <p>
@@ -1676,7 +1676,7 @@ instead of a <code>Visitor</code> interface value.
 The <code>WalkFunc</code> function will be called even for files or directories that could not be opened;
 in such cases the error argument will describe the failure.
 If a directory's contents are to be skipped,
-the function should return the value <a href="/pkg/path/filepath/#variables"><code>filepath.SkipDir</code></a>
+the function should return the value <a href="/pkg/path/filepath/#pkg-variables"><code>filepath.SkipDir</code></a>
 </p>
 
 {{code "/doc/progs/go1.go" `/STARTWALK/` `/ENDWALK/`}}
@@ -1865,7 +1865,7 @@ made easier with the new structure of the packages.
 The imports will be updated by fix tool.
 Single-template uses will be otherwise be largely unaffected.
 Code that uses multiple templates in concert will need to be updated by hand.
-The <a href="/pkg/text/template/#examples">examples</a> in
+The <a href="/pkg/text/template/#pkg-examples">examples</a> in
 the documentation for <code>text/template</code> can provide guidance.
 </p>
 

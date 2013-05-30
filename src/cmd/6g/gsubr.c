@@ -103,9 +103,13 @@ dumpdata(void)
 /*
  * generate a branch.
  * t is ignored.
+ * likely values are for branch prediction:
+ *	-1 unlikely
+ *	0 no opinion
+ *	+1 likely
  */
 Prog*
-gbranch(int as, Type *t)
+gbranch(int as, Type *t, int likely)
 {
 	Prog *p;
 	
@@ -113,7 +117,11 @@ gbranch(int as, Type *t)
 
 	p = prog(as);
 	p->to.type = D_BRANCH;
-	p->to.branch = P;
+	p->to.u.branch = P;
+	if(as != AJMP && likely != 0) {
+		p->from.type = D_CONST;
+		p->from.offset = likely > 0;
+	}
 	return p;
 }
 
@@ -125,7 +133,7 @@ patch(Prog *p, Prog *to)
 {
 	if(p->to.type != D_BRANCH)
 		fatal("patch: not a branch");
-	p->to.branch = to;
+	p->to.u.branch = to;
 	p->to.offset = to->loc;
 }
 
@@ -136,8 +144,8 @@ unpatch(Prog *p)
 
 	if(p->to.type != D_BRANCH)
 		fatal("unpatch: not a branch");
-	q = p->to.branch;
-	p->to.branch = P;
+	q = p->to.u.branch;
+	p->to.u.branch = P;
 	p->to.offset = 0;
 	return q;
 }
@@ -165,44 +173,6 @@ newplist(void)
 }
 
 void
-clearstk(void)
-{
-	Plist *pl;
-	Prog *p1, *p2;
-	Node sp, di, cx, con, ax;
-
-	if((uint32)plast->firstpc->to.offset <= 0)
-		return;
-
-	// reestablish context for inserting code
-	// at beginning of function.
-	pl = plast;
-	p1 = pl->firstpc;
-	p2 = p1->link;
-	pc = mal(sizeof(*pc));
-	clearp(pc);
-	p1->link = pc;
-	
-	// zero stack frame
-	nodreg(&sp, types[tptr], D_SP);
-	nodreg(&di, types[tptr], D_DI);
-	nodreg(&cx, types[TUINT64], D_CX);
-	nodconst(&con, types[TUINT64], (uint32)p1->to.offset / widthptr);
-	gins(ACLD, N, N);
-	gins(AMOVQ, &sp, &di);
-	gins(AMOVQ, &con, &cx);
-	nodconst(&con, types[TUINT64], 0);
-	nodreg(&ax, types[TUINT64], D_AX);
-	gins(AMOVQ, &con, &ax);
-	gins(AREP, N, N);
-	gins(ASTOSQ, N, N);
-
-	// continue with original code.
-	gins(ANOP, N, N)->link = p2;
-	pc = P;
-}	
-
-void
 gused(Node *n)
 {
 	gins(ANOP, n, N);	// used
@@ -213,22 +183,23 @@ gjmp(Prog *to)
 {
 	Prog *p;
 
-	p = gbranch(AJMP, T);
+	p = gbranch(AJMP, T, 0);
 	if(to != P)
 		patch(p, to);
 	return p;
 }
 
 void
-ggloblnod(Node *nam, int32 width)
+ggloblnod(Node *nam)
 {
 	Prog *p;
 
 	p = gins(AGLOBL, nam, N);
 	p->lineno = nam->lineno;
+	p->from.gotype = ngotype(nam);
 	p->to.sym = S;
 	p->to.type = D_CONST;
-	p->to.offset = width;
+	p->to.offset = nam->type->width;
 	if(nam->readonly)
 		p->from.scale = RODATA;
 	if(nam->type != T && !haspointers(nam->type))
@@ -236,7 +207,18 @@ ggloblnod(Node *nam, int32 width)
 }
 
 void
-ggloblsym(Sym *s, int32 width, int dupok)
+gtrack(Sym *s)
+{
+	Prog *p;
+	
+	p = gins(AUSEFIELD, N, N);
+	p->from.type = D_EXTERN;
+	p->from.index = D_NONE;
+	p->from.sym = s;
+}
+
+void
+ggloblsym(Sym *s, int32 width, int dupok, int rodata)
 {
 	Prog *p;
 
@@ -248,8 +230,9 @@ ggloblsym(Sym *s, int32 width, int dupok)
 	p->to.index = D_NONE;
 	p->to.offset = width;
 	if(dupok)
-		p->from.scale = DUPOK;
-	p->from.scale |= RODATA;
+		p->from.scale |= DUPOK;
+	if(rodata)
+		p->from.scale |= RODATA;
 }
 
 int
@@ -272,11 +255,12 @@ isfat(Type *t)
  * call afunclit to fix up the argument.
  */
 void
-afunclit(Addr *a)
+afunclit(Addr *a, Node *n)
 {
 	if(a->type == D_ADDR && a->index == D_EXTERN) {
 		a->type = D_EXTERN;
 		a->index = D_NONE;
+		a->sym = n->sym;
 	}
 }
 
@@ -300,7 +284,7 @@ ginit(void)
 		reg[i] = 1;
 	for(i=D_AX; i<=D_R15; i++)
 		reg[i] = 0;
-	for(i=D_X0; i<=D_X7; i++)
+	for(i=D_X0; i<=D_X15; i++)
 		reg[i] = 0;
 
 	for(i=0; i<nelem(resvd); i++)
@@ -318,7 +302,7 @@ gclean(void)
 	for(i=D_AX; i<=D_R15; i++)
 		if(reg[i])
 			yyerror("reg %R left allocated\n", i);
-	for(i=D_X0; i<=D_X7; i++)
+	for(i=D_X0; i<=D_X15; i++)
 		if(reg[i])
 			yyerror("reg %R left allocated\n", i);
 }
@@ -388,10 +372,10 @@ regalloc(Node *n, Type *t, Node *o)
 	case TFLOAT64:
 		if(o != N && o->op == OREGISTER) {
 			i = o->val.u.reg;
-			if(i >= D_X0 && i <= D_X7)
+			if(i >= D_X0 && i <= D_X15)
 				goto out;
 		}
-		for(i=D_X0; i<=D_X7; i++)
+		for(i=D_X0; i<=D_X15; i++)
 			if(reg[i] == 0)
 				goto out;
 		fatal("out of floating registers");
@@ -571,7 +555,12 @@ ismem(Node *n)
 	case OINDREG:
 	case ONAME:
 	case OPARAM:
+	case OCLOSUREVAR:
 		return 1;
+	case OADDR:
+		if(flag_largemodel)
+			return 1;
+		break;
 	}
 	return 0;
 }
@@ -616,7 +605,7 @@ gmove(Node *f, Node *t)
 	Prog *p1, *p2;
 
 	if(debug['M'])
-		print("gmove %N -> %N\n", f, t);
+		print("gmove %lN -> %lN\n", f, t);
 
 	ft = simsimtype(f->type);
 	tt = simsimtype(t->type);
@@ -706,11 +695,14 @@ gmove(Node *f, Node *t)
 	case CASE(TINT32, TUINT32):
 	case CASE(TUINT32, TINT32):
 	case CASE(TUINT32, TUINT32):
+		a = AMOVL;
+		break;
+
 	case CASE(TINT64, TINT32):	// truncate
 	case CASE(TUINT64, TINT32):
 	case CASE(TINT64, TUINT32):
 	case CASE(TUINT64, TUINT32):
-		a = AMOVL;
+		a = AMOVQL;
 		break;
 
 	case CASE(TINT64, TINT64):	// same size
@@ -832,9 +824,9 @@ gmove(Node *f, Node *t)
 		regalloc(&r4, types[tt], N);
 		gins(optoas(OAS, f->type), f, &r1);
 		gins(optoas(OCMP, f->type), &bigf, &r1);
-		p1 = gbranch(optoas(OLE, f->type), T);
+		p1 = gbranch(optoas(OLE, f->type), T, +1);
 		gins(a, &r1, &r2);
-		p2 = gbranch(AJMP, T);
+		p2 = gbranch(AJMP, T, 0);
 		patch(p1, pc);
 		gins(optoas(OAS, f->type), &bigf, &r3);
 		gins(optoas(OSUB, f->type), &r3, &r1);
@@ -903,9 +895,9 @@ gmove(Node *f, Node *t)
 		regalloc(&r4, f->type, N);
 		gmove(f, &r1);
 		gins(ACMPQ, &r1, &zero);
-		p1 = gbranch(AJLT, T);
+		p1 = gbranch(AJLT, T, +1);
 		gins(a, &r1, &r2);
-		p2 = gbranch(AJMP, T);
+		p2 = gbranch(AJMP, T, 0);
 		patch(p1, pc);
 		gmove(&r1, &r3);
 		gins(ASHRQ, &one, &r3);
@@ -1016,6 +1008,13 @@ gins(int as, Node *f, Node *t)
 	case AMOVSD:
 		if(f != N && t != N && samaddr(f, t))
 			return nil;
+		break;
+	
+	case ALEAQ:
+		if(f != N && isconst(f, CTNIL)) {
+			fatal("gins LEAQ nil %T", f->type);
+		}
+		break;
 	}
 
 	memset(&af, 0, sizeof af);
@@ -1047,11 +1046,32 @@ gins(int as, Node *f, Node *t)
 		w = 8;
 		break;
 	}
-	if(w != 0 && f != N && (af.width > w || at.width > w)) {
+	if(w != 0 && ((f != N && af.width < w) || (t != N && at.width > w))) {
+		dump("f", f);
+		dump("t", t);
 		fatal("bad width: %P (%d, %d)\n", p, af.width, at.width);
 	}
 
 	return p;
+}
+
+// Generate an instruction referencing *n
+// to force segv on nil pointer dereference.
+void
+checkref(Node *n, int force)
+{
+	Node m;
+
+	if(!force && isptr[n->type->etype] && n->type->type->width < unmappedzero)
+		return;
+
+	regalloc(&m, types[TUINTPTR], n);
+	cgen(n, &m);
+	m.xoffset = 0;
+	m.op = OINDREG;
+	m.type = types[TUINT8];
+	gins(ATESTB, nodintconst(0), &m);
+	regfree(&m);
 }
 
 static void
@@ -1084,8 +1104,14 @@ naddr(Node *n, Addr *a, int canemitcode)
 	a->type = D_NONE;
 	a->gotype = S;
 	a->node = N;
+	a->width = 0;
 	if(n == N)
 		return;
+
+	if(n->type != T && n->type->etype != TIDEAL) {
+		dowidth(n->type);
+		a->width = n->type->width;
+	}
 
 	switch(n->op) {
 	default:
@@ -1121,6 +1147,8 @@ naddr(Node *n, Addr *a, int canemitcode)
 		a->type = n->val.u.reg+D_INDIR;
 		a->sym = n->sym;
 		a->offset = n->xoffset;
+		if(a->offset != (int32)a->offset)
+			yyerror("offset %lld too large for OINDREG", a->offset);
 		checkoffset(a, canemitcode);
 		break;
 
@@ -1134,15 +1162,22 @@ naddr(Node *n, Addr *a, int canemitcode)
 		a->type = D_PARAM;
 		a->node = n->left->orig;
 		break;
+	
+	case OCLOSUREVAR:
+		a->type = D_DX+D_INDIR;
+		a->sym = S;
+		a->offset = n->xoffset;
+		break;
+	
+	case OCFUNC:
+		naddr(n->left, a, canemitcode);
+		a->sym = n->left->sym;
+		break;
 
 	case ONAME:
 		a->etype = 0;
-		a->width = 0;
-		if(n->type != T) {
+		if(n->type != T)
 			a->etype = simtype[n->type->etype];
-			a->width = n->type->width;
-			a->gotype = ngotype(n);
-		}
 		a->offset = n->xoffset;
 		a->sym = n->sym;
 		a->node = n->orig;
@@ -1173,6 +1208,8 @@ naddr(Node *n, Addr *a, int canemitcode)
 		case PFUNC:
 			a->index = D_EXTERN;
 			a->type = D_ADDR;
+			a->width = widthptr;
+			a->sym = funcsym(a->sym);
 			break;
 		}
 		break;
@@ -1184,7 +1221,7 @@ naddr(Node *n, Addr *a, int canemitcode)
 			break;
 		case CTFLT:
 			a->type = D_FCONST;
-			a->dval = mpgetflt(n->val.u.fval);
+			a->u.dval = mpgetflt(n->val.u.fval);
 			break;
 		case CTINT:
 		case CTRUNE:
@@ -1210,6 +1247,7 @@ naddr(Node *n, Addr *a, int canemitcode)
 
 	case OADDR:
 		naddr(n->left, a, canemitcode);
+		a->width = widthptr;
 		if(a->type >= D_INDIR) {
 			a->type -= D_INDIR;
 			break;
@@ -1239,9 +1277,9 @@ naddr(Node *n, Addr *a, int canemitcode)
 		naddr(n->left, a, canemitcode);
 		if(a->type == D_CONST && a->offset == 0)
 			break;	// len(nil)
-		a->etype = TUINT32;
+		a->etype = simtype[TUINT];
 		a->offset += Array_nel;
-		a->width = 4;
+		a->width = widthint;
 		if(a->offset >= unmappedzero && a->offset-Array_nel < unmappedzero)
 			checkoffset(a, canemitcode);
 		break;
@@ -1251,9 +1289,9 @@ naddr(Node *n, Addr *a, int canemitcode)
 		naddr(n->left, a, canemitcode);
 		if(a->type == D_CONST && a->offset == 0)
 			break;	// cap(nil)
-		a->etype = TUINT32;
+		a->etype = simtype[TUINT];
 		a->offset += Array_cap;
-		a->width = 4;
+		a->width = widthint;
 		if(a->offset >= unmappedzero && a->offset-Array_cap < unmappedzero)
 			checkoffset(a, canemitcode);
 		break;
@@ -1645,6 +1683,28 @@ optoas(int op, Type *t)
 		a = AXORQ;
 		break;
 
+	case CASE(OLROT, TINT8):
+	case CASE(OLROT, TUINT8):
+		a = AROLB;
+		break;
+
+	case CASE(OLROT, TINT16):
+	case CASE(OLROT, TUINT16):
+		a = AROLW;
+		break;
+
+	case CASE(OLROT, TINT32):
+	case CASE(OLROT, TUINT32):
+	case CASE(OLROT, TPTR32):
+		a = AROLL;
+		break;
+
+	case CASE(OLROT, TINT64):
+	case CASE(OLROT, TUINT64):
+	case CASE(OLROT, TPTR64):
+		a = AROLQ;
+		break;
+
 	case CASE(OLSH, TINT8):
 	case CASE(OLSH, TUINT8):
 		a = ASHLB;
@@ -1701,23 +1761,23 @@ optoas(int op, Type *t)
 		a = ASARQ;
 		break;
 
-	case CASE(ORRC, TINT8):
-	case CASE(ORRC, TUINT8):
+	case CASE(ORROTC, TINT8):
+	case CASE(ORROTC, TUINT8):
 		a = ARCRB;
 		break;
 
-	case CASE(ORRC, TINT16):
-	case CASE(ORRC, TUINT16):
+	case CASE(ORROTC, TINT16):
+	case CASE(ORROTC, TUINT16):
 		a = ARCRW;
 		break;
 
-	case CASE(ORRC, TINT32):
-	case CASE(ORRC, TUINT32):
+	case CASE(ORROTC, TINT32):
+	case CASE(ORROTC, TUINT32):
 		a = ARCRL;
 		break;
 
-	case CASE(ORRC, TINT64):
-	case CASE(ORRC, TUINT64):
+	case CASE(ORROTC, TINT64):
+	case CASE(ORROTC, TUINT64):
 		a = ARCRQ;
 		break;
 
@@ -1889,9 +1949,9 @@ sudoclean(void)
 int
 sudoaddable(int as, Node *n, Addr *a)
 {
-	int o, i, w;
-	int oary[10];
-	int64 v;
+	int o, i;
+	int64 oary[10];
+	int64 v, w;
 	Node n1, n2, n3, n4, *nn, *l, *r;
 	Node *reg, *reg1;
 	Prog *p1;
@@ -1919,6 +1979,9 @@ sudoaddable(int as, Node *n, Addr *a)
 		goto odot;
 
 	case OINDEX:
+		return 0;
+		// disabled: OINDEX case is now covered by agenr
+		// for a more suitable register allocation pattern.
 		if(n->left->type->etype == TSTRING)
 			return 0;
 		goto oindex;
@@ -2053,32 +2116,20 @@ oindex:
 	}
 
 	// check bounds
-	if(!debug['B'] && !n->etype) {
+	if(!debug['B'] && !n->bounded) {
 		// check bounds
 		n4.op = OXXX;
-		t = types[TUINT32];
+		t = types[simtype[TUINT]];
 		if(o & ODynam) {
 			if(o & OAddable) {
 				n2 = *l;
 				n2.xoffset += Array_nel;
-				n2.type = types[TUINT32];
-				if(is64(r->type)) {
-					t = types[TUINT64];
-					regalloc(&n4, t, N);
-					gmove(&n2, &n4);
-					n2 = n4;
-				}
+				n2.type = types[simtype[TUINT]];
 			} else {
 				n2 = *reg;
 				n2.xoffset = Array_nel;
 				n2.op = OINDREG;
-				n2.type = types[TUINT32];
-				if(is64(r->type)) {
-					t = types[TUINT64];
-					regalloc(&n4, t, N);
-					gmove(&n2, &n4);
-					n2 = n4;
-				}
+				n2.type = types[simtype[TUINT]];
 			}
 		} else {
 			if(is64(r->type))
@@ -2086,10 +2137,10 @@ oindex:
 			nodconst(&n2, types[TUINT64], l->type->bound);
 		}
 		gins(optoas(OCMP, t), reg1, &n2);
-		p1 = gbranch(optoas(OLT, t), T);
+		p1 = gbranch(optoas(OLT, t), T, +1);
 		if(n4.op != OXXX)
 			regfree(&n4);
-		ginscall(panicindex, 0);
+		ginscall(panicindex, -1);
 		patch(p1, pc);
 	}
 
@@ -2140,19 +2191,19 @@ oindex_const:
 	reg->op = OEMPTY;
 	reg1->op = OEMPTY;
 
-	regalloc(reg, types[tptr], N);
-	agen(l, reg);
-
 	if(o & ODynam) {
-		if(!debug['B'] && !n->etype) {
+		regalloc(reg, types[tptr], N);
+		agen(l, reg);
+	
+		if(!debug['B'] && !n->bounded) {
 			n1 = *reg;
 			n1.op = OINDREG;
 			n1.type = types[tptr];
 			n1.xoffset = Array_nel;
 			nodconst(&n2, types[TUINT64], v);
-			gins(optoas(OCMP, types[TUINT32]), &n1, &n2);
-			p1 = gbranch(optoas(OGT, types[TUINT32]), T);
-			ginscall(panicindex, 0);
+			gins(optoas(OCMP, types[simtype[TUINT]]), &n1, &n2);
+			p1 = gbranch(optoas(OGT, types[simtype[TUINT]]), T, +1);
+			ginscall(panicindex, -1);
 			patch(p1, pc);
 		}
 
@@ -2162,14 +2213,24 @@ oindex_const:
 		n1.xoffset = Array_array;
 		gmove(&n1, reg);
 
+		n2 = *reg;
+		n2.op = OINDREG;
+		n2.xoffset = v*w;
+		a->type = D_NONE;
+		a->index = D_NONE;
+		naddr(&n2, a, 1);
+		goto yes;
 	}
-
-	n2 = *reg;
-	n2.op = OINDREG;
-	n2.xoffset = v*w;
+	
+	igen(l, &n1, N);
+	if(n1.op == OINDREG) {
+		*reg = n1;
+		reg->op = OREGISTER;
+	}
+	n1.xoffset += v*w;
 	a->type = D_NONE;
-	a->index = D_NONE;
-	naddr(&n2, a, 1);
+	a->index= D_NONE;
+	naddr(&n1, a, 1);
 	goto yes;
 
 oindex_const_sudo:
@@ -2180,13 +2241,13 @@ oindex_const_sudo:
 	}
 
 	// slice indexed by a constant
-	if(!debug['B'] && !n->etype) {
+	if(!debug['B'] && !n->bounded) {
 		a->offset += Array_nel;
 		nodconst(&n2, types[TUINT64], v);
-		p1 = gins(optoas(OCMP, types[TUINT32]), N, &n2);
+		p1 = gins(optoas(OCMP, types[simtype[TUINT]]), N, &n2);
 		p1->from = *a;
-		p1 = gbranch(optoas(OGT, types[TUINT32]), T);
-		ginscall(panicindex, 0);
+		p1 = gbranch(optoas(OGT, types[simtype[TUINT]]), T, +1);
+		ginscall(panicindex, -1);
 		patch(p1, pc);
 		a->offset -= Array_nel;
 	}

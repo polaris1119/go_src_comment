@@ -124,8 +124,7 @@ func (r *sparseReader) Read(b []byte) (n int, err error) {
 
 func TestVeryLongSparseChunk(t *testing.T) {
 	if testing.Short() {
-		t.Logf("skipping sparse chunk during short test")
-		return
+		t.Skip("skipping sparse chunk during short test")
 	}
 	w, err := NewWriter(ioutil.Discard, 1)
 	if err != nil {
@@ -159,7 +158,6 @@ func (b *syncBuffer) Read(p []byte) (n int, err error) {
 		}
 		<-b.ready
 	}
-	panic("unreachable")
 }
 
 func (b *syncBuffer) signal() {
@@ -334,7 +332,7 @@ var deflateInflateStringTests = []deflateInflateStringTest{
 	{
 		"../testdata/e.txt",
 		"2.718281828...",
-		[...]int{10013, 5065, 5096, 5115, 5093, 5079, 5079, 5079, 5079, 5079},
+		[...]int{100018, 50650, 50960, 51150, 50930, 50790, 50790, 50790, 50790, 50790},
 	},
 	{
 		"../testdata/Mark.Twain-Tom.Sawyer.txt",

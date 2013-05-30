@@ -49,12 +49,11 @@
 #define REGM        (REGEXT-1)
 /* compiler allocates external registers R10 down */
 #define	REGTMP		11
-#define	REGSB		12
 #define	REGSP		13
 #define	REGLINK		14
 #define	REGPC		15
 
-#define	NFREG		8
+#define	NFREG		16
 #define	FREGRET		0
 #define	FREGEXT		7
 #define	FREGTMP		15
@@ -127,6 +126,8 @@ enum	as
 	ADIVD,
 	ASQRTF,
 	ASQRTD,
+	AABSF,
+	AABSD,
 
 	ASRL,
 	ASRA,
@@ -184,6 +185,21 @@ enum	as
 	ALDREXD,
 	ASTREXD,
 
+	APLD,
+
+	AUNDEF,
+
+	ACLZ,
+
+	AMULWT,
+	AMULWB,
+	AMULAWT,
+	AMULAWB,
+	
+	AUSEFIELD,
+	ALOCALS,
+	ATYPE,
+
 	ALAST,
 };
 
@@ -237,11 +253,13 @@ enum	as
 
 #define	D_SHIFT		(D_NONE+19)
 #define	D_FPCR		(D_NONE+20)
-#define	D_REGREG	(D_NONE+21)
+#define	D_REGREG	(D_NONE+21) // (reg, reg)
 #define	D_ADDR		(D_NONE+22)
 
 #define	D_SBIG		(D_NONE+23)
 #define	D_CONST2	(D_NONE+24)
+
+#define	D_REGREG2	(D_NONE+25) // reg, reg
 
 /* name */
 #define	D_EXTERN	(D_NONE+3)
@@ -252,11 +270,17 @@ enum	as
 /* internal only */
 #define	D_SIZE		(D_NONE+40)
 #define	D_PCREL		(D_NONE+41)
+#define	D_GOTOFF	(D_NONE+42) // R_ARM_GOTOFF
+#define	D_PLT0		(D_NONE+43) // R_ARM_PLT32, 1st inst: add ip, pc, #0xNN00000
+#define	D_PLT1		(D_NONE+44) // R_ARM_PLT32, 2nd inst: add ip, ip, #0xNN000
+#define	D_PLT2		(D_NONE+45) // R_ARM_PLT32, 3rd inst: ldr pc, [ip, #0xNNN]!
+#define	D_CALL		(D_NONE+46) // R_ARM_PLT32/R_ARM_CALL/R_ARM_JUMP24, bl xxxxx or b yyyyy
+#define	D_TLS		(D_NONE+47)
 
 /*
  * this is the ranlib header
  */
-#define	SYMDEF	"__.SYMDEF"
+#define	SYMDEF	"__.GOSYMDEF"
 
 /*
  * this is the simulated IEEE floating point

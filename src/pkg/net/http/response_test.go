@@ -112,8 +112,8 @@ var respTests = []respTest{
 			ProtoMinor: 0,
 			Request:    dummyReq("GET"),
 			Header: Header{
-				"Connection":     {"close"}, // TODO(rsc): Delete?
-				"Content-Length": {"10"},    // TODO(rsc): Delete?
+				"Connection":     {"close"},
+				"Content-Length": {"10"},
 			},
 			Close:         true,
 			ContentLength: 10,
@@ -124,7 +124,7 @@ var respTests = []respTest{
 
 	// Chunked response without Content-Length.
 	{
-		"HTTP/1.0 200 OK\r\n" +
+		"HTTP/1.1 200 OK\r\n" +
 			"Transfer-Encoding: chunked\r\n" +
 			"\r\n" +
 			"0a\r\n" +
@@ -137,12 +137,12 @@ var respTests = []respTest{
 		Response{
 			Status:           "200 OK",
 			StatusCode:       200,
-			Proto:            "HTTP/1.0",
+			Proto:            "HTTP/1.1",
 			ProtoMajor:       1,
-			ProtoMinor:       0,
+			ProtoMinor:       1,
 			Request:          dummyReq("GET"),
 			Header:           Header{},
-			Close:            true,
+			Close:            false,
 			ContentLength:    -1,
 			TransferEncoding: []string{"chunked"},
 		},
@@ -152,13 +152,57 @@ var respTests = []respTest{
 
 	// Chunked response with Content-Length.
 	{
-		"HTTP/1.0 200 OK\r\n" +
+		"HTTP/1.1 200 OK\r\n" +
 			"Transfer-Encoding: chunked\r\n" +
 			"Content-Length: 10\r\n" +
 			"\r\n" +
 			"0a\r\n" +
-			"Body here\n" +
+			"Body here\n\r\n" +
 			"0\r\n" +
+			"\r\n",
+
+		Response{
+			Status:           "200 OK",
+			StatusCode:       200,
+			Proto:            "HTTP/1.1",
+			ProtoMajor:       1,
+			ProtoMinor:       1,
+			Request:          dummyReq("GET"),
+			Header:           Header{},
+			Close:            false,
+			ContentLength:    -1,
+			TransferEncoding: []string{"chunked"},
+		},
+
+		"Body here\n",
+	},
+
+	// Chunked response in response to a HEAD request
+	{
+		"HTTP/1.1 200 OK\r\n" +
+			"Transfer-Encoding: chunked\r\n" +
+			"\r\n",
+
+		Response{
+			Status:           "200 OK",
+			StatusCode:       200,
+			Proto:            "HTTP/1.1",
+			ProtoMajor:       1,
+			ProtoMinor:       1,
+			Request:          dummyReq("HEAD"),
+			Header:           Header{},
+			TransferEncoding: []string{"chunked"},
+			Close:            false,
+			ContentLength:    -1,
+		},
+
+		"",
+	},
+
+	// Content-Length in response to a HEAD request
+	{
+		"HTTP/1.0 200 OK\r\n" +
+			"Content-Length: 256\r\n" +
 			"\r\n",
 
 		Response{
@@ -167,33 +211,54 @@ var respTests = []respTest{
 			Proto:            "HTTP/1.0",
 			ProtoMajor:       1,
 			ProtoMinor:       0,
-			Request:          dummyReq("GET"),
-			Header:           Header{},
+			Request:          dummyReq("HEAD"),
+			Header:           Header{"Content-Length": {"256"}},
+			TransferEncoding: nil,
 			Close:            true,
-			ContentLength:    -1, // TODO(rsc): Fix?
-			TransferEncoding: []string{"chunked"},
+			ContentLength:    256,
 		},
 
-		"Body here\n",
+		"",
 	},
 
-	// Chunked response in response to a HEAD request (the "chunked" should
-	// be ignored, as HEAD responses never have bodies)
+	// Content-Length in response to a HEAD request with HTTP/1.1
 	{
-		"HTTP/1.0 200 OK\r\n" +
-			"Transfer-Encoding: chunked\r\n" +
+		"HTTP/1.1 200 OK\r\n" +
+			"Content-Length: 256\r\n" +
 			"\r\n",
 
 		Response{
-			Status:        "200 OK",
-			StatusCode:    200,
-			Proto:         "HTTP/1.0",
-			ProtoMajor:    1,
-			ProtoMinor:    0,
-			Request:       dummyReq("HEAD"),
-			Header:        Header{},
-			Close:         true,
-			ContentLength: 0,
+			Status:           "200 OK",
+			StatusCode:       200,
+			Proto:            "HTTP/1.1",
+			ProtoMajor:       1,
+			ProtoMinor:       1,
+			Request:          dummyReq("HEAD"),
+			Header:           Header{"Content-Length": {"256"}},
+			TransferEncoding: nil,
+			Close:            false,
+			ContentLength:    256,
+		},
+
+		"",
+	},
+
+	// No Content-Length or Chunked in response to a HEAD request
+	{
+		"HTTP/1.0 200 OK\r\n" +
+			"\r\n",
+
+		Response{
+			Status:           "200 OK",
+			StatusCode:       200,
+			Proto:            "HTTP/1.0",
+			ProtoMajor:       1,
+			ProtoMinor:       0,
+			Request:          dummyReq("HEAD"),
+			Header:           Header{},
+			TransferEncoding: nil,
+			Close:            true,
+			ContentLength:    -1,
 		},
 
 		"",
@@ -259,16 +324,37 @@ var respTests = []respTest{
 
 		"",
 	},
+
+	// golang.org/issue/4767: don't special-case multipart/byteranges responses
+	{
+		`HTTP/1.1 206 Partial Content
+Connection: close
+Content-Type: multipart/byteranges; boundary=18a75608c8f47cef
+
+some body`,
+		Response{
+			Status:     "206 Partial Content",
+			StatusCode: 206,
+			Proto:      "HTTP/1.1",
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Request:    dummyReq("GET"),
+			Header: Header{
+				"Content-Type": []string{"multipart/byteranges; boundary=18a75608c8f47cef"},
+			},
+			Close:         true,
+			ContentLength: -1,
+		},
+
+		"some body",
+	},
 }
 
 func TestReadResponse(t *testing.T) {
-	for i := range respTests {
-		tt := &respTests[i]
-		var braw bytes.Buffer
-		braw.WriteString(tt.Raw)
-		resp, err := ReadResponse(bufio.NewReader(&braw), tt.Resp.Request)
+	for i, tt := range respTests {
+		resp, err := ReadResponse(bufio.NewReader(strings.NewReader(tt.Raw)), tt.Resp.Request)
 		if err != nil {
-			t.Errorf("#%d: %s", i, err)
+			t.Errorf("#%d: %v", i, err)
 			continue
 		}
 		rbody := resp.Body
@@ -276,12 +362,32 @@ func TestReadResponse(t *testing.T) {
 		diff(t, fmt.Sprintf("#%d Response", i), resp, &tt.Resp)
 		var bout bytes.Buffer
 		if rbody != nil {
-			io.Copy(&bout, rbody)
+			_, err = io.Copy(&bout, rbody)
+			if err != nil {
+				t.Errorf("#%d: %v", i, err)
+				continue
+			}
 			rbody.Close()
 		}
 		body := bout.String()
 		if body != tt.Body {
 			t.Errorf("#%d: Body = %q want %q", i, body, tt.Body)
+		}
+	}
+}
+
+func TestWriteResponse(t *testing.T) {
+	for i, tt := range respTests {
+		resp, err := ReadResponse(bufio.NewReader(strings.NewReader(tt.Raw)), tt.Resp.Request)
+		if err != nil {
+			t.Errorf("#%d: %v", i, err)
+			continue
+		}
+		bout := bytes.NewBuffer(nil)
+		err = resp.Write(bout)
+		if err != nil {
+			t.Errorf("#%d: %v", i, err)
+			continue
 		}
 	}
 }
@@ -360,7 +466,7 @@ func TestReadResponseCloseInMiddle(t *testing.T) {
 		if test.compressed {
 			gzReader, err := gzip.NewReader(resp.Body)
 			checkErr(err, "gzip.NewReader")
-			resp.Body = &readFirstCloseBoth{gzReader, resp.Body}
+			resp.Body = &readerAndCloser{gzReader, resp.Body}
 		}
 
 		rbuf := make([]byte, 2500)

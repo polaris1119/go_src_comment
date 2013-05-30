@@ -31,8 +31,8 @@
 		%X	base 16, with upper-case letters for A-F
 		%U	Unicode format: U+1234; same as "U+%04X"
 	Floating-point and complex constituents:
-		%b	decimalless scientific notation with exponent a power of two, 
-			in the manner of strconv.FormatFloat with the 'b' format, 
+		%b	decimalless scientific notation with exponent a power of two,
+			in the manner of strconv.FormatFloat with the 'b' format,
 			e.g. -123456p-78
 		%e	scientific notation, e.g. -1234.456e+78
 		%E	scientific notation, e.g. -1234.456E+78
@@ -56,13 +56,17 @@
 	character '*', causing their values to be obtained from the next
 	operand, which must be of type int.
 
-	For numeric values, width sets the width of the field and precision
-	sets the number of places after the decimal, if appropriate.  For
-	example, the format %6.2f prints 123.45.
+	For numeric values, width sets the minimum width of the field and
+	precision sets the number of places after the decimal, if appropriate,
+	except that for %g/%G it sets the total number of digits. For example,
+	given 123.45 the format %6.2f prints 123.45 while %.4g prints 123.5.
+	The default precision for %e and %f is 6; for %g it is the smallest
+	number of digits necessary to identify the value uniquely.
 
-	For strings, width is the minimum number of characters to output,
-	padding with spaces if necessary, and precision is the maximum
-	number of characters to output, truncating if necessary.
+	For most values, width is the minimum number of characters to output,
+	padding the formatted form with spaces if necessary.
+	For strings, precision is the maximum number of characters to output,
+	truncating if necessary.
 
 	Other flags:
 		+	always print a sign for numeric values;
@@ -70,11 +74,17 @@
 		-	pad with spaces on the right rather than the left (left-justify the field)
 		#	alternate format: add leading 0 for octal (%#o), 0x for hex (%#x);
 			0X for hex (%#X); suppress 0x for %p (%#p);
-			print a raw (backquoted) string if possible for %q (%#q);
+			for %q, print a raw (backquoted) string if strconv.CanBackquote
+			returns true;
 			write e.g. U+0078 'x' if the character is printable for %U (%#U).
 		' '	(space) leave a space for elided sign in numbers (% d);
 			put spaces between bytes printing strings or slices in hex (% x, % X)
-		0	pad with leading zeros rather than spaces
+		0	pad with leading zeros rather than spaces;
+			for numbers, this moves the padding after the sign
+
+	Flags are ignored by verbs that do not expect them.
+	For example there is no alternate decimal format, so %#d and %d
+	behave identically.
 
 	For each Printf-like function, there is also a Print function
 	that takes no format and is equivalent to saying %v for every
@@ -128,6 +138,16 @@
 	by a single character (the verb) and end with a parenthesized
 	description.
 
+	If an Error or String method triggers a panic when called by a
+	print routine, the fmt package reformats the error message
+	from the panic, decorating it with an indication that it came
+	through the fmt package.  For example, if a String method
+	calls panic("bad"), the resulting formatted message will look
+	like
+		%s(PANIC=bad)
+
+	The %s just shows the print verb in use when the failure
+	occurred.
 
 	Scanning
 
@@ -152,6 +172,7 @@
 		%T is not implemented
 		%e %E %f %F %g %G are all equivalent and scan any floating point or complex value
 		%s and %v on strings scan a space-delimited token
+		Flags # and + are not implemented.
 
 	The familiar base-setting prefixes 0 (octal) and 0x
 	(hexadecimal) are accepted when scanning integers without a

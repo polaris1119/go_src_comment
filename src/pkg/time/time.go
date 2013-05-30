@@ -257,6 +257,30 @@ func (t Time) abs() uint64 {
 	return uint64(sec + (unixToInternal + internalToAbsolute))
 }
 
+// locabs is a combination of the Zone and abs methods,
+// extracting both return values from a single zone lookup.
+func (t Time) locabs() (name string, offset int, abs uint64) {
+	l := t.loc
+	if l == nil || l == &localLoc {
+		l = l.get()
+	}
+	// Avoid function call if we hit the local time cache.
+	sec := t.sec + internalToUnix
+	if l != &utcLoc {
+		if l.cacheZone != nil && l.cacheStart <= sec && sec < l.cacheEnd {
+			name = l.cacheZone.name
+			offset = l.cacheZone.offset
+		} else {
+			name, offset, _, _, _ = l.lookup(sec)
+		}
+		sec += int64(offset)
+	} else {
+		name = "UTC"
+	}
+	abs = uint64(sec + (unixToInternal + internalToAbsolute))
+	return
+}
+
 // Date returns the year, month, and day in which t occurs.
 func (t Time) Date() (year int, month Month, day int) {
 	year, month, day, _ = t.date(true)
@@ -283,8 +307,13 @@ func (t Time) Day() int {
 
 // Weekday returns the day of the week specified by t.
 func (t Time) Weekday() Weekday {
+	return absWeekday(t.abs())
+}
+
+// absWeekday is like Weekday but operates on an absolute time.
+func absWeekday(abs uint64) Weekday {
 	// January 1 of the absolute year, like January 1 of 2001, was a Monday.
-	sec := (t.abs() + uint64(Monday)*secondsPerDay) % secondsPerWeek
+	sec := (abs + uint64(Monday)*secondsPerDay) % secondsPerWeek
 	return Weekday(int(sec) / secondsPerDay)
 }
 
@@ -349,7 +378,12 @@ func (t Time) ISOWeek() (year, week int) {
 
 // Clock returns the hour, minute, and second within the day specified by t.
 func (t Time) Clock() (hour, min, sec int) {
-	sec = int(t.abs() % secondsPerDay)
+	return absClock(t.abs())
+}
+
+// absClock is like clock but operates on an absolute time.
+func absClock(abs uint64) (hour, min, sec int) {
+	sec = int(abs % secondsPerDay)
 	hour = sec / secondsPerHour
 	sec -= hour * secondsPerHour
 	min = sec / secondsPerMinute
@@ -376,6 +410,13 @@ func (t Time) Second() int {
 // in the range [0, 999999999].
 func (t Time) Nanosecond() int {
 	return int(t.nsec)
+}
+
+// YearDay returns the day of the year specified by t, in the range [1,365] for non-leap years,
+// and [1,366] in leap years.
+func (t Time) YearDay() int {
+	_, _, _, yday := t.date(false)
+	return yday + 1
 }
 
 // A Duration represents the elapsed time between two instants
@@ -607,11 +648,16 @@ const (
 	days1970To2001   = 31*365 + 8
 )
 
-// date computes the year and, only when full=true,
+// date computes the year, day of year, and when full=true,
 // the month and day in which t occurs.
 func (t Time) date(full bool) (year int, month Month, day int, yday int) {
+	return absDate(t.abs(), full)
+}
+
+// absDate is like date but operates on an absolute time.
+func absDate(abs uint64, full bool) (year int, month Month, day int, yday int) {
 	// Split into time and day.
-	d := t.abs() / secondsPerDay
+	d := abs / secondsPerDay
 
 	// Account for 400 year cycles.
 	n := d / daysPer400Years
@@ -986,4 +1032,117 @@ func Date(year int, month Month, day, hour, min, sec, nsec int, loc *Location) T
 	}
 
 	return Time{unix + unixToInternal, int32(nsec), loc}
+}
+
+// Truncate returns the result of rounding t down to a multiple of d (since the zero time).
+// If d <= 0, Truncate returns t unchanged.
+func (t Time) Truncate(d Duration) Time {
+	if d <= 0 {
+		return t
+	}
+	_, r := div(t, d)
+	return t.Add(-r)
+}
+
+// Round returns the result of rounding t to the nearest multiple of d (since the zero time).
+// The rounding behavior for halfway values is to round up.
+// If d <= 0, Round returns t unchanged.
+func (t Time) Round(d Duration) Time {
+	if d <= 0 {
+		return t
+	}
+	_, r := div(t, d)
+	if r+r < d {
+		return t.Add(-r)
+	}
+	return t.Add(d - r)
+}
+
+// div divides t by d and returns the quotient parity and remainder.
+// We don't use the quotient parity anymore (round half up instead of round to even)
+// but it's still here in case we change our minds.
+func div(t Time, d Duration) (qmod2 int, r Duration) {
+	neg := false
+	if t.sec < 0 {
+		// Operate on absolute value.
+		neg = true
+		t.sec = -t.sec
+		t.nsec = -t.nsec
+		if t.nsec < 0 {
+			t.nsec += 1e9
+			t.sec-- // t.sec >= 1 before the -- so safe
+		}
+	}
+
+	switch {
+	// Special case: 2d divides 1 second.
+	case d < Second && Second%(d+d) == 0:
+		qmod2 = int(t.nsec/int32(d)) & 1
+		r = Duration(t.nsec % int32(d))
+
+	// Special case: d is a multiple of 1 second.
+	case d%Second == 0:
+		d1 := int64(d / Second)
+		qmod2 = int(t.sec/d1) & 1
+		r = Duration(t.sec%d1)*Second + Duration(t.nsec)
+
+	// General case.
+	// This could be faster if more cleverness were applied,
+	// but it's really only here to avoid special case restrictions in the API.
+	// No one will care about these cases.
+	default:
+		// Compute nanoseconds as 128-bit number.
+		sec := uint64(t.sec)
+		tmp := (sec >> 32) * 1e9
+		u1 := tmp >> 32
+		u0 := tmp << 32
+		tmp = uint64(sec&0xFFFFFFFF) * 1e9
+		u0x, u0 := u0, u0+tmp
+		if u0 < u0x {
+			u1++
+		}
+		u0x, u0 = u0, u0+uint64(t.nsec)
+		if u0 < u0x {
+			u1++
+		}
+
+		// Compute remainder by subtracting r<<k for decreasing k.
+		// Quotient parity is whether we subtract on last round.
+		d1 := uint64(d)
+		for d1>>63 != 1 {
+			d1 <<= 1
+		}
+		d0 := uint64(0)
+		for {
+			qmod2 = 0
+			if u1 > d1 || u1 == d1 && u0 >= d0 {
+				// subtract
+				qmod2 = 1
+				u0x, u0 = u0, u0-d0
+				if u0 > u0x {
+					u1--
+				}
+				u1 -= d1
+			}
+			if d1 == 0 && d0 == uint64(d) {
+				break
+			}
+			d0 >>= 1
+			d0 |= (d1 & 1) << 63
+			d1 >>= 1
+		}
+		r = Duration(u0)
+	}
+
+	if neg && r != 0 {
+		// If input was negative and not an exact multiple of d, we computed q, r such that
+		//	q*d + r = -t
+		// But the right answers are given by -(q-1), d-r:
+		//	q*d + r = -t
+		//	-q*d - r = t
+		//	-(q-1)*d + (d - r) = t
+		qmod2 ^= 1
+		r = d - r
+	}
+	return
 }

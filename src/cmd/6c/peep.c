@@ -330,20 +330,7 @@ subprop(Reg *r0)
 		case AIMULW:
 			if(p->to.type != D_NONE)
 				break;
-
-		case ADIVB:
-		case ADIVL:
-		case ADIVQ:
-		case ADIVW:
-		case AIDIVB:
-		case AIDIVL:
-		case AIDIVQ:
-		case AIDIVW:
-		case AIMULB:
-		case AMULB:
-		case AMULL:
-		case AMULQ:
-		case AMULW:
+			goto giveup;
 
 		case AROLB:
 		case AROLL:
@@ -369,6 +356,23 @@ subprop(Reg *r0)
 		case ASHRL:
 		case ASHRQ:
 		case ASHRW:
+			if(p->from.type == D_CONST)
+				break;
+			goto giveup;
+
+		case ADIVB:
+		case ADIVL:
+		case ADIVQ:
+		case ADIVW:
+		case AIDIVB:
+		case AIDIVL:
+		case AIDIVQ:
+		case AIDIVW:
+		case AIMULB:
+		case AMULB:
+		case AMULL:
+		case AMULQ:
+		case AMULW:
 
 		case AREP:
 		case AREPN:
@@ -383,6 +387,8 @@ subprop(Reg *r0)
 		case AMOVSB:
 		case AMOVSL:
 		case AMOVSQ:
+		case AMOVQL:
+		giveup:
 			return 0;
 
 		case AMOVL:
@@ -581,6 +587,7 @@ copyu(Prog *p, Adr *v, Adr *s)
 	case AMOVWLZX:
 	case AMOVWQSX:
 	case AMOVWQZX:
+	case AMOVQL:
 
 	case AMOVSS:
 	case AMOVSD:
@@ -694,6 +701,11 @@ copyu(Prog *p, Adr *v, Adr *s)
 	case ACMPW:
 	case ACMPB:
 	case ACMPQ:
+
+	case APREFETCHT0:
+	case APREFETCHT1:
+	case APREFETCHT2:
+	case APREFETCHNTA:
 
 	case ACOMISD:
 	case ACOMISS:

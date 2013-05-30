@@ -1,3 +1,5 @@
+// cmpout
+
 // Copyright 2010 The Go Authors.  All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -22,7 +24,7 @@ var gen = flag.Int("gen", 10, "generations")
 func main() {
 	flag.Parse()
 
-	var a [MAXDIM * MAXDIM]int
+	var a [MAXDIM * MAXDIM]int32
 	for i := 2; i < *dim; i += 8 {
 		for j := 2; j < *dim-3; j += 8 {
 			for y := 0; y < 3; y++ {

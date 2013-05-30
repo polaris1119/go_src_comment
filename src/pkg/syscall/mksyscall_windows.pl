@@ -118,7 +118,7 @@ while(<>) {
 	}
 
 	# Decide which version of api is used: ascii or unicode.
-	my $strconvfunc = $sysname !~ /W$/ ? "bytePtrFromString" : "utf16PtrFromString";
+	my $strconvfunc = $sysname !~ /W$/ ? "BytePtrFromString" : "UTF16PtrFromString";
 	my $strconvtype = $sysname !~ /W$/ ? "*byte" : "*uint16";
 
 	# Winapi proc address variable.
@@ -266,7 +266,7 @@ while(<>) {
 				$failexpr = "!$name";
 			} elsif($name eq "err") {
 				$ret[$i] = "r1";
-				$failexpr = "int(r1) $failcond";
+				$failexpr = "r1 $failcond";
 			} else {
 				$failexpr = "$name $failcond";
 			}

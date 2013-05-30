@@ -1,76 +1,73 @@
-{{with .PAst}}{{node . $.FSet}}{{end}}{{/*
+{{with .PAst}}{{node $ .}}{{end}}{{/*
 
 ---------------------------------------
 
-*/}}{{with .PDoc}}{{if $.IsPkg}}PACKAGE
+*/}}{{with .PDoc}}{{if $.IsMain}}COMMAND DOCUMENTATION
+
+{{comment_text .Doc "    " "\t"}}
+{{else}}PACKAGE DOCUMENTATION
 
 package {{.Name}}
     import "{{.ImportPath}}"
 
-{{else}}COMMAND DOCUMENTATION
-
-{{end}}{{comment_text .Doc "    " "\t"}}{{/*
+{{comment_text .Doc "    " "\t"}}
+{{example_text $ "" "    "}}{{/*
 
 ---------------------------------------
 
 */}}{{with .Consts}}
 CONSTANTS
 
-{{range .}}{{node .Decl $.FSet}}
-{{comment_text .Doc "    " "\t"}}{{end}}
-{{end}}{{/*
+{{range .}}{{node $ .Decl}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{end}}{{/*
 
 ---------------------------------------
 
 */}}{{with .Vars}}
 VARIABLES
 
-{{range .}}{{node .Decl $.FSet}}
-{{comment_text .Doc "    " "\t"}}{{end}}
-{{end}}{{/*
+{{range .}}{{node $ .Decl}}
+{{comment_text .Doc "    " "\t"}}
+{{end}}{{end}}{{/*
 
 ---------------------------------------
 
 */}}{{with .Funcs}}
 FUNCTIONS
 
-{{range .}}{{node .Decl $.FSet}}
+{{range .}}{{node $ .Decl}}
 {{comment_text .Doc "    " "\t"}}
-{{end}}{{end}}{{/*
+{{example_text $ .Name "    "}}{{end}}{{end}}{{/*
 
 ---------------------------------------
 
 */}}{{with .Types}}
 TYPES
 
-{{range .}}{{node .Decl $.FSet}}
+{{range .}}{{$tname := .Name}}{{node $ .Decl}}
 {{comment_text .Doc "    " "\t"}}
-{{range .Consts}}{{node .Decl $.FSet}}
+{{range .Consts}}{{node $ .Decl}}
 {{comment_text .Doc "    " "\t"}}
-{{end}}{{range .Vars}}{{node .Decl $.FSet}}
+{{end}}{{range .Vars}}{{node $ .Decl}}
 {{comment_text .Doc "    " "\t"}}
-{{end}}{{range .Funcs}}{{node .Decl $.FSet}}
+{{end}}{{example_text $ .Name "    "}}
+{{range .Funcs}}{{node $ .Decl}}
 {{comment_text .Doc "    " "\t"}}
-{{end}}{{range .Methods}}{{node .Decl $.FSet}}
+{{example_text $ .Name "    "}}
+{{end}}{{range .Methods}}{{node $ .Decl}}
 {{comment_text .Doc "    " "\t"}}
+{{$name := printf "%s_%s" $tname .Name}}{{example_text $ $name "    "}}{{end}}
 {{end}}{{end}}{{end}}{{/*
 
 ---------------------------------------
 
-*/}}{{with .Bugs}}
-BUGS
+*/}}{{with $.Notes}}
+{{range $marker, $content := .}}
+{{$marker}}S
 
-{{range .}}{{comment_text . "    " "\t"}}
-{{end}}{{end}}{{end}}{{/*
-
----------------------------------------
-
-*/}}{{with .PList}}
-OTHER PACKAGES
-
-{{range .}}
-{{.}}{{end}}
-{{end}}{{/*
+{{range $content}}{{comment_text .Body "   " "\t"}}
+{{end}}{{end}}{{end}}{{end}}{{/*
 
 ---------------------------------------
 

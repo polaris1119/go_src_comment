@@ -3,23 +3,19 @@
 // license that can be found in the LICENSE file.
 
 // opts is an object with these keys
-// 	codeEl - code editor element 
-// 	outputEl - program output element
-// 	runEl - run button element
-// 	fmtEl - fmt button element (optional)
-// 	shareEl - share button element (optional)
-// 	shareURLEl - share URL text input element (optional)
-// 	shareRedirect - base URL to redirect to on share (optional)
-// 	preCompile - callback to mutate request data before compiling (optional)
-// 	postCompile - callback to read response data after compiling (optional)
-// 	simple - use plain textarea instead of CodeMirror. (optional)
-// 	toysEl - select element with a list of toys. (optional)
+//	codeEl - code editor element
+//	outputEl - program output element
+//	runEl - run button element
+//	fmtEl - fmt button element (optional)
+//	shareEl - share button element (optional)
+//	shareURLEl - share URL text input element (optional)
+//	shareRedirect - base URL to redirect to on share (optional)
+//	toysEl - toys select element (optional)
+//	enableHistory - enable using HTML5 history API (optional)
 function playground(opts) {
-	var simple = opts['simple'];
 	var code = $(opts['codeEl']);
-	var editor;
 
-	// autoindent helpers for simple mode.
+	// autoindent helpers.
 	function insertTabs(n) {
 		// find the selection start and end
 		var start = code[0].selectionStart;
@@ -49,12 +45,12 @@ function playground(opts) {
 			}
 		}
 		setTimeout(function() {
-			insertTabs(tabs, 1);
+			insertTabs(tabs);
 		}, 1);
 	}
 
 	function keyHandler(e) {
-		if (simple && e.keyCode == 9) { // tab
+		if (e.keyCode == 9) { // tab
 			insertTabs(1);
 			e.preventDefault();
 			return false;
@@ -64,58 +60,19 @@ function playground(opts) {
 				run();
 				e.preventDefault();
 				return false;
-			} else if (simple) {
+			} else {
 				autoindent(e.target);
 			}
 		}
 		return true;
 	}
-	if (simple) {
-		code.unbind('keydown').bind('keydown', keyHandler);
-	} else {
-		editor = CodeMirror.fromTextArea(
-			code[0],
-			{
-				lineNumbers: true,
-				indentUnit: 8,
-				indentWithTabs: true,
-				onKeyEvent: function(editor, e) { keyHandler(e); }
-			}
-		);
-	}
+	code.unbind('keydown').bind('keydown', keyHandler);
 	var output = $(opts['outputEl']);
 
-	function clearErrors() {
-		if (!editor) {
-			return;
-		}
-		var lines = editor.lineCount();
-		for (var i = 0; i < lines; i++) {
-			editor.setLineClass(i, null);
-		}
-	}
-	function highlightErrors(text) {
-		if (!editor) {
-			return;
-		}
-		var errorRe = /[a-z]+\.go:([0-9]+):/g;
-		var result;
-		while ((result = errorRe.exec(text)) != null) {
-			var line = result[1]*1-1;
-			editor.setLineClass(line, "errLine")
-		}
-	}
 	function body() {
-		if (editor) {
-			return editor.getValue();
-		}
 		return $(opts['codeEl']).val();
 	}
 	function setBody(text) {
-		if (editor) {
-			editor.setValue(text);
-			return;
-		}
 		$(opts['codeEl']).val(text);
 	}
 	function origin(href) {
@@ -126,24 +83,116 @@ function playground(opts) {
 			'<div class="loading">Waiting for remote server...</div>'
 		);
 	}
-	function setOutput(text, error) {
+	var playbackTimeout;
+	function playback(pre, events) {
+		function show(msg) {
+			// ^L clears the screen.
+			var msgs = msg.split("\x0c");
+			if (msgs.length == 1) {
+				pre.text(pre.text() + msg);
+				return;
+			}
+			pre.text(msgs.pop());
+		}
+		function next() {
+			if (events.length == 0) {
+				var exit = $('<span class="exit"/>');
+				exit.text("\nProgram exited.");
+				exit.appendTo(pre);
+				return;
+			}
+			var e = events.shift();
+			if (e.Delay == 0) {
+				show(e.Message);
+				next();
+			} else {
+				playbackTimeout = setTimeout(function() {
+					show(e.Message);
+					next();
+				}, e.Delay / 1000000);
+			}
+		}
+		next();
+	}
+	function stopPlayback() {
+		clearTimeout(playbackTimeout);
+	}
+	function setOutput(events, error) {
+		stopPlayback();
 		output.empty();
+		$(".lineerror").removeClass("lineerror");
+
+		// Display errors.
 		if (error) {
 			output.addClass("error");
+			var regex = /prog.go:([0-9]+)/g;
+			var r;
+			while (r = regex.exec(error)) {
+				$(".lines div").eq(r[1]-1).addClass("lineerror");
+			}
+			$("<pre/>").text(error).appendTo(output);
+			return;
 		}
-		$("<pre/>").text(text).appendTo(output);
+
+		// Display image output.
+		if (events.length > 0 && events[0].Message.indexOf("IMAGE:") == 0) {
+			var out = "";
+			for (var i = 0; i < events.length; i++) {
+				out += events[i].Message;
+			}
+			var url = "data:image/png;base64," + out.substr(6);
+			$("<img/>").attr("src", url).appendTo(output);
+			return;
+		}
+
+		// Play back events.
+		if (events !== null) {
+			var pre = $("<pre/>").appendTo(output);
+			playback(pre, events);
+		}
+	}
+
+	var pushedEmpty = (window.location.pathname == "/");
+	function inputChanged() {
+		if (pushedEmpty) {
+			return;
+		}
+		pushedEmpty = true;
+
+		$(opts['shareURLEl']).hide();
+		window.history.pushState(null, "", "/");
+	}
+
+	function popState(e) {
+		if (e == null) {
+			return;
+		}
+
+		if (e && e.state && e.state.code) {
+			setBody(e.state.code);
+		}
+	}
+
+	var rewriteHistory = false;
+
+	if (window.history &&
+		window.history.pushState &&
+		window.addEventListener &&
+		opts['enableHistory']) {
+		rewriteHistory = true;
+		code[0].addEventListener('input', inputChanged);
+		window.addEventListener('popstate', popState)
 	}
 
 	var seq = 0;
 	function run() {
-		clearErrors();
 		loading();
 		seq++;
 		var cur = seq;
-		var data = {"body": body()};
-		if (opts['preCompile']) {
-			opts['preCompile'](data);
-		}
+		var data = {
+			"version": 2,
+			"body": body()
+		};
 		$.ajax("/compile", {
 			data: data,
 			type: "POST",
@@ -152,34 +201,19 @@ function playground(opts) {
 				if (seq != cur) {
 					return;
 				}
-				if (opts['postCompile']) {
-					opts['postCompile'](data);
-				}
 				if (!data) {
 					return;
 				}
-				if (data.compile_errors != "") {
-					setOutput(data.compile_errors, true);
-					highlightErrors(data.compile_errors);
+				if (data.Errors) {
+					setOutput(null, data.Errors);
 					return;
 				}
-				var out = ""+data.output;
-				if (out.indexOf("IMAGE:") == 0) {
-					var img = $("<img/>");
-					var url = "data:image/png;base64,";
-					url += out.substr(6)
-					img.attr("src", url);
-					output.empty().append(img);
-					return;
-				}
-				setOutput(out, false);
+				setOutput(data.Events, false);
 			},
-			error: function(xhr) {
-				var text = "Error communicating with remote server.";
-				if (xhr.status == 501) {
-					text = xhr.responseText;
-				}
-				output.addClass("error").text(text);
+			error: function() {
+				output.addClass("error").text(
+					"Error communicating with remote server."
+				);
 			}
 		});
 	}
@@ -193,29 +227,11 @@ function playground(opts) {
 			dataType: "json",
 			success: function(data) {
 				if (data.Error) {
-					setOutput(data.Error, true);
-					highlightErrors(data.Error);
+					setOutput(null, data.Error);
 					return;
 				}
 				setBody(data.Body);
-				setOutput("", false);
-			}
-		});
-	});
-
-	$(opts['toysEl']).bind('change', function() {
-		var toy = $(this).val();
-		loading();
-		$.ajax("/doc/play/"+toy, {
-			processData: false,
-			type: "GET",
-			complete: function(xhr) {
-				if (xhr.status != 200) {
-					setOutput("Server error; try again.", true);
-					return;
-				}
-				setBody(xhr.responseText);
-				setOutput("", false);
+				setOutput(null);
 			}
 		});
 	});
@@ -229,16 +245,13 @@ function playground(opts) {
 		$(opts['shareEl']).click(function() {
 			if (sharing) return;
 			sharing = true;
+			var sharingData = body();
 			$.ajax("/share", {
 				processData: false,
-				data: body(),
+				data: sharingData,
 				type: "POST",
 				complete: function(xhr) {
 					sharing = false;
-					if (xhr.status == 501) {
-						alert(xhr.responseText);
-						return;
-					}
 					if (xhr.status != 200) {
 						alert("Server error; try again.");
 						return;
@@ -247,13 +260,37 @@ function playground(opts) {
 						window.location = opts['shareRedirect'] + xhr.responseText;
 					}
 					if (shareURL) {
-						var url = origin(window.location) + "/p/" + xhr.responseText;
+						var path = "/p/" + xhr.responseText
+						var url = origin(window.location) + path;
 						shareURL.show().val(url).focus().select();
+
+						if (rewriteHistory) {
+							var historyData = {
+								"code": sharingData,
+							};
+							window.history.pushState(historyData, "", path);
+							pushedEmpty = false;
+						}
 					}
 				}
 			});
 		});
 	}
 
-	return editor;
+	if (opts['toysEl'] != null) {
+		$(opts['toysEl']).bind('change', function() {
+			var toy = $(this).val();
+			$.ajax("/doc/play/"+toy, {
+				processData: false,
+				type: "GET",
+				complete: function(xhr) {
+					if (xhr.status != 200) {
+						alert("Server error; try again.")
+						return;
+					}
+					setBody(xhr.responseText);
+				}
+			});
+		});
+	}
 }

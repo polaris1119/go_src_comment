@@ -10,6 +10,14 @@ import (
 	"syscall"
 )
 
+// The only signal values guaranteed to be present on all systems
+// are Interrupt (send the process an interrupt) and Kill (force
+// the process to exit).
+var (
+	Interrupt Signal = syscall.SIGINT
+	Kill      Signal = syscall.SIGKILL
+)
+
 func startProcess(name string, argv []string, attr *ProcAttr) (p *Process, err error) {
 	// If there is no SysProcAttr (ie. no Chroot or changed
 	// UID/GID), double-check existence of the directory we want
@@ -110,9 +118,9 @@ func (p *ProcessState) String() string {
 	case status.Exited():
 		res = "exit status " + itod(status.ExitStatus())
 	case status.Signaled():
-		res = "signal " + itod(int(status.Signal()))
+		res = "signal: " + status.Signal().String()
 	case status.Stopped():
-		res = "stop signal " + itod(int(status.StopSignal()))
+		res = "stop signal: " + status.StopSignal().String()
 		if status.StopSignal() == syscall.SIGTRAP && status.TrapCause() != 0 {
 			res += " (trap " + itod(status.TrapCause()) + ")"
 		}

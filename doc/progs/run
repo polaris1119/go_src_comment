@@ -16,6 +16,7 @@ effective_go="
 	eff_bytesize
 	eff_qr
 	eff_sequence
+	eff_unused2
 "
 
 error_handling="
@@ -39,6 +40,15 @@ c_go_cgo="
 # cgo1 and cgo2 don't run on freebsd, srandom has a different signature
 if [ "$goos" == "freebsd" ]; then
 	c_go_cgo="cgo3 cgo4"
+fi
+# cgo1 and cgo2 don't run on netbsd, srandom has a different signature
+# cgo3 and cgo4 don't run on netbsd, since cgo cannot handle stdout correctly
+if [ "$goos" == "netbsd" ]; then
+	c_go_cgo=""
+fi
+# cgo3 and cgo4 don't run on openbsd, since cgo cannot handle stdout correctly
+if [ "$goos" == "openbsd" ]; then
+	c_go_cgo="cgo1 cgo2"
 fi
 
 timeout="

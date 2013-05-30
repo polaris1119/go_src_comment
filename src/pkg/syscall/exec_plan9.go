@@ -7,6 +7,7 @@
 package syscall
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -60,7 +61,7 @@ import (
 
 var ForkLock sync.RWMutex
 
-// Convert array of string to array of NUL-terminated byte pointer.
+// StringSlicePtr is deprecated. Use SlicePtrFromStrings instead.
 // If any string contains a NUL byte this function panics instead
 // of returning an error.
 func StringSlicePtr(ss []string) []*byte {
@@ -72,14 +73,14 @@ func StringSlicePtr(ss []string) []*byte {
 	return bb
 }
 
-// slicePtrFromStrings converts a slice of strings to a slice of
+// SlicePtrFromStrings converts a slice of strings to a slice of
 // pointers to NUL-terminated byte slices. If any string contains
 // a NUL byte, it returns (nil, EINVAL).
-func slicePtrFromStrings(ss []string) ([]*byte, error) {
+func SlicePtrFromStrings(ss []string) ([]*byte, error) {
 	var err error
 	bb := make([]*byte, len(ss)+1)
 	for i := 0; i < len(ss); i++ {
-		bb[i], err = bytePtrFromString(ss[i])
+		bb[i], err = BytePtrFromString(ss[i])
 		if err != nil {
 			return nil, err
 		}
@@ -88,81 +89,65 @@ func slicePtrFromStrings(ss []string) ([]*byte, error) {
 	return bb, nil
 }
 
-// gbit16 reads a 16-bit numeric value from a 9P protocol message stored in b,
-// returning the value and the remaining slice of b.
-func gbit16(b []byte) (uint16, []byte) {
-	return uint16(b[0]) | uint16(b[1])<<8, b[2:]
-}
-
-// gstring reads a string from a 9P protocol message stored in b,
-// returning the value as a Go string and the remaining slice of b.
-func gstring(b []byte) (string, []byte) {
-	n, b := gbit16(b)
-	return string(b[0:n]), b[n:]
-}
-
 // readdirnames returns the names of files inside the directory represented by dirfd.
 func readdirnames(dirfd int) (names []string, err error) {
-	result := make([]string, 0, 100)
+	names = make([]string, 0, 100)
 	var buf [STATMAX]byte
 
 	for {
 		n, e := Read(dirfd, buf[:])
 		if e != nil {
-			return []string{}, e
+			return nil, e
 		}
 		if n == 0 {
 			break
 		}
-
 		for i := 0; i < n; {
 			m, _ := gbit16(buf[i:])
 			m += 2
 
 			if m < STATFIXLEN {
-				return []string{}, NewError("malformed stat buffer")
+				return nil, ErrBadStat
 			}
 
-			name, _ := gstring(buf[i+41:])
-			result = append(result, name)
-
+			s, _, ok := gstring(buf[i+41:])
+			if !ok {
+				return nil, ErrBadStat
+			}
+			names = append(names, s)
 			i += int(m)
 		}
 	}
-	return []string{}, nil
+	return
 }
 
 // readdupdevice returns a list of currently opened fds (excluding stdin, stdout, stderr) from the dup device #d.
 // ForkLock should be write locked before calling, so that no new fds would be created while the fd list is being read.
 func readdupdevice() (fds []int, err error) {
 	dupdevfd, err := Open("#d", O_RDONLY)
-
 	if err != nil {
 		return
 	}
 	defer Close(dupdevfd)
 
-	fileNames, err := readdirnames(dupdevfd)
+	names, err := readdirnames(dupdevfd)
 	if err != nil {
 		return
 	}
 
-	fds = make([]int, 0, len(fileNames)>>1)
-	for _, fdstr := range fileNames {
-		if l := len(fdstr); l > 2 && fdstr[l-3] == 'c' && fdstr[l-2] == 't' && fdstr[l-1] == 'l' {
+	fds = make([]int, 0, len(names)/2)
+	for _, name := range names {
+		if n := len(name); n > 3 && name[n-3:n] == "ctl" {
 			continue
 		}
-
-		fd := int(atoi([]byte(fdstr)))
-
-		if fd == 0 || fd == 1 || fd == 2 || fd == dupdevfd {
+		fd := int(atoi([]byte(name)))
+		switch fd {
+		case 0, 1, 2, dupdevfd:
 			continue
 		}
-
 		fds = append(fds, fd)
 	}
-
-	return fds[0:len(fds)], nil
+	return
 }
 
 var startupFds []int
@@ -198,11 +183,18 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 		errbuf   [ERRMAX]byte
 	)
 
-	// guard against side effects of shuffling fds below.
+	// Guard against side effects of shuffling fds below.
+	// Make sure that nextfd is beyond any currently open files so
+	// that we can't run the risk of overwriting any of them.
 	fd := make([]int, len(attr.Files))
+	nextfd = len(attr.Files)
 	for i, ufd := range attr.Files {
+		if nextfd < int(ufd) {
+			nextfd = int(ufd)
+		}
 		fd[i] = int(ufd)
 	}
+	nextfd++
 
 	if envv != nil {
 		clearenv = RFCENVG
@@ -213,7 +205,7 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 	r1, _, _ = RawSyscall(SYS_RFORK, uintptr(RFPROC|RFFDG|RFREND|clearenv|rflag), 0, 0)
 
 	if r1 != 0 {
-		if int(r1) == -1 {
+		if int32(r1) == -1 {
 			return 0, NewError(errstr())
 		}
 		// parent; return PID
@@ -225,7 +217,7 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 	// Close fds we don't need.
 	for i = 0; i < len(fdsToClose); i++ {
 		r1, _, _ = RawSyscall(SYS_CLOSE, uintptr(fdsToClose[i]), 0, 0)
-		if int(r1) == -1 {
+		if int32(r1) == -1 {
 			goto childerror
 		}
 	}
@@ -235,7 +227,7 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 		for i = 0; i < len(envv); i++ {
 			r1, _, _ = RawSyscall(SYS_CREATE, uintptr(unsafe.Pointer(envv[i].name)), uintptr(O_WRONLY), uintptr(0666))
 
-			if int(r1) == -1 {
+			if int32(r1) == -1 {
 				goto childerror
 			}
 
@@ -244,13 +236,13 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 			r1, _, _ = RawSyscall6(SYS_PWRITE, uintptr(envfd), uintptr(unsafe.Pointer(envv[i].value)), uintptr(envv[i].nvalue),
 				^uintptr(0), ^uintptr(0), 0)
 
-			if int(r1) == -1 || int(r1) != envv[i].nvalue {
+			if int32(r1) == -1 || int(r1) != envv[i].nvalue {
 				goto childerror
 			}
 
 			r1, _, _ = RawSyscall(SYS_CLOSE, uintptr(envfd), 0, 0)
 
-			if int(r1) == -1 {
+			if int32(r1) == -1 {
 				goto childerror
 			}
 		}
@@ -259,17 +251,16 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 	// Chdir
 	if dir != nil {
 		r1, _, _ = RawSyscall(SYS_CHDIR, uintptr(unsafe.Pointer(dir)), 0, 0)
-		if int(r1) == -1 {
+		if int32(r1) == -1 {
 			goto childerror
 		}
 	}
 
 	// Pass 1: look for fd[i] < i and move those up above len(fd)
 	// so that pass 2 won't stomp on an fd it needs later.
-	nextfd = int(len(fd))
 	if pipe < nextfd {
 		r1, _, _ = RawSyscall(SYS_DUP, uintptr(pipe), uintptr(nextfd), 0)
-		if int(r1) == -1 {
+		if int32(r1) == -1 {
 			goto childerror
 		}
 		pipe = nextfd
@@ -278,7 +269,7 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 	for i = 0; i < len(fd); i++ {
 		if fd[i] >= 0 && fd[i] < int(i) {
 			r1, _, _ = RawSyscall(SYS_DUP, uintptr(fd[i]), uintptr(nextfd), 0)
-			if int(r1) == -1 {
+			if int32(r1) == -1 {
 				goto childerror
 			}
 
@@ -299,12 +290,17 @@ func forkAndExecInChild(argv0 *byte, argv []*byte, envv []envItem, dir *byte, at
 		if fd[i] == int(i) {
 			continue
 		}
-
 		r1, _, _ = RawSyscall(SYS_DUP, uintptr(fd[i]), uintptr(i), 0)
-		if int(r1) == -1 {
+		if int32(r1) == -1 {
 			goto childerror
 		}
-		RawSyscall(SYS_CLOSE, uintptr(fd[i]), 0, 0)
+	}
+
+	// Pass 3: close fd[i] if it was moved in the previous pass.
+	for i = 0; i < len(fd); i++ {
+		if fd[i] >= 0 && fd[i] != int(i) {
+			RawSyscall(SYS_CLOSE, uintptr(fd[i]), 0, 0)
+		}
 	}
 
 	// Time to exec.
@@ -391,18 +387,18 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 	p[1] = -1
 
 	// Convert args to C form.
-	argv0p, err := bytePtrFromString(argv0)
+	argv0p, err := BytePtrFromString(argv0)
 	if err != nil {
 		return 0, err
 	}
-	argvp, err := slicePtrFromStrings(argv)
+	argvp, err := SlicePtrFromStrings(argv)
 	if err != nil {
 		return 0, err
 	}
 
 	var dir *byte
 	if attr.Dir != "" {
-		dir, err = bytePtrFromString(attr.Dir)
+		dir, err = BytePtrFromString(attr.Dir)
 		if err != nil {
 			return 0, err
 		}
@@ -416,7 +412,7 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 				i++
 			}
 
-			envname, err := bytePtrFromString("/env/" + v[:i])
+			envname, err := BytePtrFromString("/env/" + v[:i])
 			if err != nil {
 				return 0, err
 			}
@@ -432,44 +428,37 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 	// get a list of open fds, excluding stdin,stdout and stderr that need to be closed in the child.
 	// no new fds can be created while we hold the ForkLock for writing.
 	openFds, e := readdupdevice()
-
 	if e != nil {
 		ForkLock.Unlock()
 		return 0, e
 	}
 
 	fdsToClose := make([]int, 0, len(openFds))
-	// exclude fds opened from startup from the list of fds to be closed.
 	for _, fd := range openFds {
-		isReserved := false
-		for _, reservedFd := range startupFds {
-			if fd == reservedFd {
-				isReserved = true
+		doClose := true
+
+		// exclude files opened at startup.
+		for _, sfd := range startupFds {
+			if fd == sfd {
+				doClose = false
 				break
 			}
 		}
 
-		if !isReserved {
-			fdsToClose = append(fdsToClose, fd)
-		}
-	}
-
-	// exclude fds requested by the caller from the list of fds to be closed.
-	for _, fd := range openFds {
-		isReserved := false
-		for _, reservedFd := range attr.Files {
-			if fd == int(reservedFd) {
-				isReserved = true
+		// exclude files explicitly requested by the caller.
+		for _, rfd := range attr.Files {
+			if fd == int(rfd) {
+				doClose = false
 				break
 			}
 		}
 
-		if !isReserved {
+		if doClose {
 			fdsToClose = append(fdsToClose, fd)
 		}
 	}
 
-	// Allocate child status pipe close on exec.	
+	// Allocate child status pipe close on exec.
 	e = cexecPipe(p[:])
 
 	if e != nil {
@@ -512,14 +501,75 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 	return pid, nil
 }
 
+type waitErr struct {
+	Waitmsg
+	err error
+}
+
+var procs struct {
+	sync.Mutex
+	waits map[int]chan *waitErr
+}
+
+// startProcess starts a new goroutine, tied to the OS
+// thread, which runs the process and subsequently waits
+// for it to finish, communicating the process stats back
+// to any goroutines that may have been waiting on it.
+//
+// Such a dedicated goroutine is needed because on
+// Plan 9, only the parent thread can wait for a child,
+// whereas goroutines tend to jump OS threads (e.g.,
+// between starting a process and running Wait(), the
+// goroutine may have been rescheduled).
+func startProcess(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) {
+	type forkRet struct {
+		pid int
+		err error
+	}
+
+	forkc := make(chan forkRet, 1)
+	go func() {
+		runtime.LockOSThread()
+		var ret forkRet
+
+		ret.pid, ret.err = forkExec(argv0, argv, attr)
+		// If fork fails there is nothing to wait for.
+		if ret.err != nil || ret.pid == 0 {
+			forkc <- ret
+			return
+		}
+
+		waitc := make(chan *waitErr, 1)
+
+		// Mark that the process is running.
+		procs.Lock()
+		if procs.waits == nil {
+			procs.waits = make(map[int]chan *waitErr)
+		}
+		procs.waits[ret.pid] = waitc
+		procs.Unlock()
+
+		forkc <- ret
+
+		var w waitErr
+		for w.err == nil && w.Pid != ret.pid {
+			w.err = Await(&w.Waitmsg)
+		}
+		waitc <- &w
+		close(waitc)
+	}()
+	ret := <-forkc
+	return ret.pid, ret.err
+}
+
 // Combination of fork and exec, careful to be thread safe.
 func ForkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) {
-	return forkExec(argv0, argv, attr)
+	return startProcess(argv0, argv, attr)
 }
 
 // StartProcess wraps ForkExec for package os.
 func StartProcess(argv0 string, argv []string, attr *ProcAttr) (pid int, handle uintptr, err error) {
-	pid, err = forkExec(argv0, argv, attr)
+	pid, err = startProcess(argv0, argv, attr)
 	return pid, 0, err
 }
 
@@ -527,7 +577,7 @@ func StartProcess(argv0 string, argv []string, attr *ProcAttr) (pid int, handle 
 func Exec(argv0 string, argv []string, envv []string) (err error) {
 	if envv != nil {
 		r1, _, _ := RawSyscall(SYS_RFORK, RFCENVG, 0, 0)
-		if int(r1) == -1 {
+		if int32(r1) == -1 {
 			return NewError(errstr())
 		}
 
@@ -551,11 +601,11 @@ func Exec(argv0 string, argv []string, envv []string) (err error) {
 		}
 	}
 
-	argv0p, err := bytePtrFromString(argv0)
+	argv0p, err := BytePtrFromString(argv0)
 	if err != nil {
 		return err
 	}
-	argvp, err := slicePtrFromStrings(argv)
+	argvp, err := SlicePtrFromStrings(argv)
 	if err != nil {
 		return err
 	}
@@ -565,4 +615,36 @@ func Exec(argv0 string, argv []string, envv []string) (err error) {
 		0)
 
 	return e1
+}
+
+// WaitProcess waits until the pid of a
+// running process is found in the queue of
+// wait messages. It is used in conjunction
+// with ForkExec/StartProcess to wait for a
+// running process to exit.
+func WaitProcess(pid int, w *Waitmsg) (err error) {
+	procs.Lock()
+	ch := procs.waits[pid]
+	procs.Unlock()
+
+	var wmsg *waitErr
+	if ch != nil {
+		wmsg = <-ch
+		procs.Lock()
+		if procs.waits[pid] == ch {
+			delete(procs.waits, pid)
+		}
+		procs.Unlock()
+	}
+	if wmsg == nil {
+		// ch was missing or ch is closed
+		return NewError("process not found")
+	}
+	if wmsg.err != nil {
+		return wmsg.err
+	}
+	if w != nil {
+		*w = wmsg.Waitmsg
+	}
+	return nil
 }

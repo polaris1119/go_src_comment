@@ -11,6 +11,11 @@
 
 %{
 
+// This tag will end up in the generated y.go, so that forgetting
+// 'make clean' does not fail the next build.
+
+// +build ignore
+
 // units.y
 // example of a Go yacc program
 // usage is
@@ -26,11 +31,13 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
-	"bufio"
-	"os"
 	"math"
+	"runtime"
+	"os"
+	"path/filepath"
 	"strconv"
 	"unicode/utf8"
 )
@@ -74,9 +81,9 @@ var vflag bool
 
 %type	<node>	prog expr expr0 expr1 expr2 expr3 expr4
 
-%token	<vval>	VAL
+%token	<vval>	VÄL // dieresis to test UTF-8
 %token	<vvar>	VAR
-%token	<numb>	SUP
+%token	<numb>	_SUP // tests leading underscore in token name
 %%
 prog:
 	':' VAR expr
@@ -157,7 +164,7 @@ expr3:
 
 expr2:
 	expr1
-|	expr2 SUP
+|	expr2 _SUP
 	{
 		xpn(&$$, &$1, $2)
 	}
@@ -197,7 +204,7 @@ expr0:
 			$$ = $1.node
 		}
 	}
-|	VAL
+|	VÄL
 	{
 		$$ = one
 		$$.vval = $1
@@ -234,13 +241,13 @@ loop:
 		return '/'
 	case '¹', 'ⁱ':
 		yylval.numb = 1
-		return SUP
+		return _SUP
 	case '²', '⁲':
 		yylval.numb = 2
-		return SUP
+		return _SUP
 	case '³', '⁳':
 		yylval.numb = 3
-		return SUP
+		return _SUP
 	}
 	return int(c)
 
@@ -273,7 +280,7 @@ numb:
 		f = 0
 	}
 	yylval.vval = f
-	return VAL
+	return VÄL
 }
 
 func (UnitsLex) Error(s string) {
@@ -287,13 +294,11 @@ func main() {
 
 	flag.Parse()
 
-	if dir := os.Getenv("GOROOT"); dir != "" {
-		file = dir + "/src/cmd/yacc/units.txt"
-	}
+	file = filepath.Join(runtime.GOROOT(), "src/cmd/yacc/units.txt")
 	if flag.NArg() > 0 {
 		file = flag.Arg(0)
 	} else if file == "" {
-		fmt.Fprintf(os.Stderr, "can not find data file units.txt; provide it as argument or set $GOROOT\n")
+		fmt.Fprintf(os.Stderr, "cannot find data file units.txt; provide it as argument or set $GOROOT\n")
 		os.Exit(1)
 	}
 
@@ -308,7 +313,7 @@ func main() {
 
 	/*
 	 * read the 'units' file to
-	 * develope a database
+	 * develop a database
 	 */
 	lineno = 0
 	for {

@@ -78,6 +78,16 @@ type I interface {
 	private()
 }
 
+type Public interface {
+	X()
+	Y()
+}
+
+type Private interface {
+	X()
+	y()
+}
+
 type Error interface {
 	error
 	Temporary() bool
@@ -139,7 +149,11 @@ type TPtrExported struct {
 	*Embedded
 }
 
+type FuncType func(x, y int, s string) (b *B, err error)
+
 type Embedded struct{}
+
+func PlainFunc(x, y int, s string) (b *B, err error)
 
 func (*Embedded) OnEmbedded() {}
 
@@ -150,4 +164,40 @@ func (common) OnBothTandBVal()  {}
 
 type EmbedSelector struct {
 	time.Time
+}
+
+const (
+	foo          = "foo"
+	foo2  string = "foo2"
+	truth        = foo == "foo" || foo2 == "foo2"
+)
+
+func ellipsis(...string) {}
+
+var x = &S{
+	Public:     nil,
+	private:    nil,
+	publicTime: time.Now(),
+}
+
+var parenExpr = (1 + 5)
+
+var funcLit = func() {}
+
+var m map[string]int
+
+var chanVar chan int
+
+var ifaceVar interface{} = 5
+
+var assertVar = ifaceVar.(int)
+
+var indexVar = m["foo"]
+
+var Byte byte
+var ByteFunc func(byte) rune
+
+type ByteStruct struct {
+	B byte
+	R rune
 }

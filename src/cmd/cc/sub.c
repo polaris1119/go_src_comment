@@ -847,12 +847,6 @@ simplifyshift(Node *n)
 	c2 = n->left->left->right->vconst;
 	c3 = n->left->right->vconst;
 
-/*
-	if(debug['h'])
-		print("%.3o %d %d %d #%.ux\n",
-			(s1<<3)|s2, c1, c2, topbit(c3), c3);
-*/
-
 	o = n->op;
 	switch((s1<<3)|s2) {
 	case 000:	/* (((e <<u c2) & c3) <<u c1) */
@@ -1497,6 +1491,7 @@ Init	onamesinit[] =
 	OPOSTINC,	0,	"POSTINC",
 	OPREDEC,	0,	"PREDEC",
 	OPREINC,	0,	"PREINC",
+	OPREFETCH,		0,	"PREFETCH",
 	OPROTO,		0,	"PROTO",
 	OREGISTER,	0,	"REGISTER",
 	ORETURN,	0,	"RETURN",
@@ -1520,6 +1515,7 @@ Init	onamesinit[] =
 	OINDEX,		0,	"INDEX",
 	OFAS,		0,	"FAS",
 	OREGPAIR,	0,	"REGPAIR",
+	OROTL,		0,	"ROTL",
 	OEND,		0,	"END",
 	-1,		0,	0,
 };

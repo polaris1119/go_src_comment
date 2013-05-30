@@ -72,6 +72,15 @@ typecheckrange(Node *n)
 	if(n->list->next)
 		v2 = n->list->next->n;
 
+	// this is not only a optimization but also a requirement in the spec.
+	// "if the second iteration variable is the blank identifier, the range
+	// clause is equivalent to the same clause with only the first variable
+	// present."
+	if(isblank(v2)) {
+		n->list = list1(v1);
+		v2 = N;
+	}
+
 	if(v1->defn == n)
 		v1->type = t1;
 	else if(v1->type != T && assignop(t1, v1->type, &why) == 0)
@@ -145,7 +154,7 @@ walkrange(Node *n)
 		if(v2) {
 			hp = temp(ptrto(n->type->type));
 			tmp = nod(OINDEX, ha, nodintconst(0));
-			tmp->etype = 1;	// no bounds check
+			tmp->bounded = 1;
 			init = list(init, nod(OAS, hp, nod(OADDR, tmp, N)));
 		}
 
@@ -172,9 +181,9 @@ walkrange(Node *n)
 	case TMAP:
 		th = typ(TARRAY);
 		th->type = ptrto(types[TUINT8]);
-		// see ../../pkg/runtime/hashmap.h:/hash_iter
-		// Size in words.
-		th->bound = 5 + 4*3 + 4*4/widthptr;
+		// see ../../pkg/runtime/hashmap.c:/hash_iter
+		// Size of hash_iter in # of pointers.
+		th->bound = 11;
 		hit = temp(th);
 
 		fn = syslook("mapiterinit", 1);

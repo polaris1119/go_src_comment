@@ -79,6 +79,8 @@ func (p *ProcessState) Sys() interface{} {
 // SysUsage returns system-dependent resource usage information about
 // the exited process.  Convert it to the appropriate underlying
 // type, such as *syscall.Rusage on Unix, to access its contents.
+// (On Unix, *syscall.Rusage matches struct rusage as defined in the
+// getrusage(2) manual page.)
 func (p *ProcessState) SysUsage() interface{} {
 	return p.sysUsage()
 }
@@ -89,7 +91,7 @@ func Hostname() (name string, err error) {
 }
 
 // Readdir reads the contents of the directory associated with file and
-// returns an array of up to n FileInfo values, as would be returned
+// returns a slice of up to n FileInfo values, as would be returned
 // by Lstat, in directory order. Subsequent calls on the same file will yield
 // further FileInfos.
 //

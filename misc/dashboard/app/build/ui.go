@@ -97,7 +97,7 @@ type Pagination struct {
 func goCommits(c appengine.Context, page int) ([]*Commit, error) {
 	q := datastore.NewQuery("Commit").
 		Ancestor((&Package{}).Key(c)).
-		Order("-Time").
+		Order("-Num").
 		Limit(commitsPerPage).
 		Offset(page * commitsPerPage)
 	var commits []*Commit
@@ -211,6 +211,9 @@ func builderArch(s string) string {
 
 // builderArchShort returns a short arch tag for a builder string
 func builderArchShort(s string) string {
+	if s == "linux-amd64-race" {
+		return "race"
+	}
 	arch := builderArch(s)
 	switch arch {
 	case "amd64":

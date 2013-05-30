@@ -8,23 +8,24 @@
 #include "libcgo.h"
 
 static void* threadentry(void*);
+static void (*setmg_gcc)(void*, void*);
 
 void
-xinitcgo(G* g)
+x_cgo_init(G* g, void (*setmg)(void*, void*))
 {
 	pthread_attr_t attr;
 	size_t size;
 
+	setmg_gcc = setmg;
 	pthread_attr_init(&attr);
 	pthread_attr_getstacksize(&attr, &size);
 	g->stackguard = (uintptr)&attr - size + 4096;
 	pthread_attr_destroy(&attr);
 }
 
-void (*initcgo)(G*) = xinitcgo;
 
 void
-libcgo_sys_thread_start(ThreadStart *ts)
+_cgo_sys_thread_start(ThreadStart *ts)
 {
 	pthread_attr_t attr;
 	sigset_t ign, oset;
@@ -59,21 +60,16 @@ threadentry(void *v)
 	ts.g->stackbase = (uintptr)&ts;
 
 	/*
-	 * libcgo_sys_thread_start set stackguard to stack size;
+	 * _cgo_sys_thread_start set stackguard to stack size;
 	 * change to actual guard pointer.
 	 */
 	ts.g->stackguard = (uintptr)&ts - ts.g->stackguard + 4096;
 
 	/*
-	 * Set specific keys.  On Linux/ELF, the thread local storage
-	 * is just before %fs:0.  Our dynamic 6.out's reserve 16 bytes
-	 * for the two words g and m at %fs:-16 and %fs:-8.
+	 * Set specific keys.
 	 */
-	asm volatile (
-		"movq %0, %%fs:-16\n"	// MOVL g, -16(FS)
-		"movq %1, %%fs:-8\n"	// MOVL m, -8(FS)
-		:: "r"(ts.g), "r"(ts.m)
-	);
+	setmg_gcc((void*)ts.m, (void*)ts.g);
+
 	crosscall_amd64(ts.fn);
 	return nil;
 }

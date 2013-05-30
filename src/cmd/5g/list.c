@@ -153,6 +153,12 @@ Dconv(Fmt *fp)
 			sprint(str, "%M(R%d)(REG)", a, a->reg);
 		break;
 
+	case D_REGREG2:
+		sprint(str, "R%d,R%d", a->reg, (int)a->offset);
+		if(a->name != D_NONE || a->sym != S)
+			sprint(str, "%M(R%d)(REG)", a, a->reg);
+		break;
+
 	case D_FREG:
 		sprint(str, "F%d", a->reg);
 		if(a->name != D_NONE || a->sym != S)
@@ -160,24 +166,24 @@ Dconv(Fmt *fp)
 		break;
 
 	case D_BRANCH:
-		if(a->branch == P || a->branch->loc == 0) {
+		if(a->u.branch == P || a->u.branch->loc == 0) {
 			if(a->sym != S)
 				sprint(str, "%s+%d(APC)", a->sym->name, a->offset);
 			else
 				sprint(str, "%d(APC)", a->offset);
 		} else
 			if(a->sym != S)
-				sprint(str, "%s+%d(APC)", a->sym->name, a->branch->loc);
+				sprint(str, "%s+%d(APC)", a->sym->name, a->u.branch->loc);
 			else
-				sprint(str, "%d(APC)", a->branch->loc);
+				sprint(str, "%d(APC)", a->u.branch->loc);
 		break;
 
 	case D_FCONST:
-		snprint(str, sizeof(str), "$(%.17e)", a->dval);
+		snprint(str, sizeof(str), "$(%.17e)", a->u.dval);
 		break;
 
 	case D_SCONST:
-		snprint(str, sizeof(str), "$\"%Y\"", a->sval);
+		snprint(str, sizeof(str), "$\"%Y\"", a->u.sval);
 		break;
 
 		// TODO(kaib): Add back
@@ -190,7 +196,10 @@ Dconv(Fmt *fp)
 //		goto conv;
 	}
 conv:
-	return fmtstrcpy(fp, str);
+	fmtstrcpy(fp, str);
+	if(a->gotype)
+		fmtprint(fp, "{%s}", a->gotype->name);
+	return 0;
 }
 
 int

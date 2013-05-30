@@ -1,5 +1,5 @@
 // Inferno utils/5c/peep.c
-// http://code.google.com/p/inferno-os/source/browse/utils/5g/peep.c
+// http://code.google.com/p/inferno-os/source/browse/utils/5c/peep.c
 //
 //	Copyright © 1994-1999 Lucent Technologies Inc.  All rights reserved.
 //	Portions Copyright © 1995-1997 C H Forsyth (forsyth@terzarima.net)
@@ -49,7 +49,6 @@ peep(void)
 	int t;
 
 	p1 = nil;
-	USED(p1);		// ... in unreachable code...
 /*
  * complete R structure
  */
@@ -77,6 +76,8 @@ peep(void)
 		case AGLOBL:
 		case ANAME:
 		case ASIGNAME:
+		case ALOCALS:
+		case ATYPE:
 			p = p->link;
 		}
 	}
@@ -120,7 +121,7 @@ loop1:
 			}
 			break;
 
-#ifdef	NOTDEF
+#ifdef NOTDEF
 			if(p->scond == C_SCOND_NONE)
 			if(regtyp(&p->to))
 			if(isdconst(&p->from)) {
@@ -133,26 +134,24 @@ loop1:
 	if(t)
 		goto loop1;
 
-return;
 
-#ifdef	NOTDEF
 	for(r=firstr; r!=R; r=r->link) {
 		p = r->prog;
 		switch(p->as) {
-//		case AEOR:
-//			/*
-//			 * EOR -1,x,y => MVN x,y
-//			 */
-//			if(isdconst(&p->from) && p->from.offset == -1) {
-//				p->as = AMVN;
-//				p->from.type = D_REG;
-//				if(p->reg != NREG)
-//					p->from.reg = p->reg;
-//				else
-//					p->from.reg = p->to.reg;
-//				p->reg = NREG;
-//			}
-//			break;
+		case AEOR:
+			/*
+			 * EOR -1,x,y => MVN x,y
+			 */
+			if(isdconst(&p->from) && p->from.offset == -1) {
+				p->as = AMVN;
+				p->from.type = D_REG;
+				if(p->reg != NREG)
+					p->from.reg = p->reg;
+				else
+					p->from.reg = p->to.reg;
+				p->reg = NREG;
+			}
+			break;
 
 		case AMOVH:
 		case AMOVHU:
@@ -161,6 +160,7 @@ return;
 			/*
 			 * look for MOVB x,R; MOVB R,R
 			 */
+			r1 = r->link;
 			if(p->to.type != D_REG)
 				break;
 			if(r1 == R)
@@ -175,23 +175,22 @@ return;
 			excise(r1);
 			break;
 		}
-		r1 = r->link;
 	}
 
-//	for(r=firstr; r!=R; r=r->link) {
-//		p = r->prog;
-//		switch(p->as) {
-//		case AMOVW:
-//		case AMOVB:
-//		case AMOVBU:
-//			if(p->from.type == D_OREG && p->from.offset == 0)
-//				xtramodes(r, &p->from);
-//			else
-//			if(p->to.type == D_OREG && p->to.offset == 0)
-//				xtramodes(r, &p->to);
-//			else
-//				continue;
-//			break;
+	for(r=firstr; r!=R; r=r->link) {
+		p = r->prog;
+		switch(p->as) {
+		case AMOVW:
+		case AMOVB:
+		case AMOVBU:
+			if(p->from.type == D_OREG && p->from.offset == 0)
+				xtramodes(r, &p->from);
+			else
+			if(p->to.type == D_OREG && p->to.offset == 0)
+				xtramodes(r, &p->to);
+			else
+				continue;
+			break;
 //		case ACMP:
 //			/*
 //			 * elide CMP $0,x if calculation of x can set condition codes
@@ -259,13 +258,17 @@ return;
 //			r2->prog->as = t;
 //			excise(r);
 //			continue;
-//		}
-//	}
+		}
+	}
 
-	predicate();
-#endif
+//	predicate();
 }
 
+/*
+ * uniqp returns a "unique" predecessor to instruction r.
+ * If the instruction is the first one or has multiple
+ * predecessors due to jump, R is returned.
+ */
 Reg*
 uniqp(Reg *r)
 {
@@ -738,6 +741,11 @@ shiftprop(Reg *r)
 	return 1;
 }
 
+/*
+ * findpre returns the last instruction mentioning v
+ * before r. It must be a set, and there must be
+ * a unique path from that instruction to r.
+ */
 Reg*
 findpre(Reg *r, Adr *v)
 {
@@ -758,6 +766,10 @@ findpre(Reg *r, Adr *v)
 	return R;
 }
 
+/*
+ * findinc finds ADD instructions with a constant
+ * argument which falls within the immed_12 range.
+ */
 Reg*
 findinc(Reg *r, Reg *r2, Adr *v)
 {
@@ -848,6 +860,19 @@ finduse(Reg *r, Adr *v)
 	return findu1(r, v);
 }
 
+/*
+ * xtramodes enables the ARM post increment and
+ * shift offset addressing modes to transform
+ *   MOVW   0(R3),R1
+ *   ADD    $4,R3,R3
+ * into
+ *   MOVW.P 4(R3),R1
+ * and 
+ *   ADD    R0,R1
+ *   MOVBU  0(R1),R0
+ * into 
+ *   MOVBU  R0<<0(R1),R0
+ */
 int
 xtramodes(Reg *r, Adr *a)
 {
@@ -856,8 +881,6 @@ xtramodes(Reg *r, Adr *a)
 	Adr v;
 
 	p = r->prog;
-	if(debug['h'] && p->as == AMOVB && p->from.type == D_OREG)	/* byte load */
-		return 0;
 	v = *a;
 	v.type = D_REG;
 	r1 = findpre(r, &v);
@@ -866,6 +889,9 @@ xtramodes(Reg *r, Adr *a)
 		if(p1->to.type == D_REG && p1->to.reg == v.reg)
 		switch(p1->as) {
 		case AADD:
+			if(p1->scond & C_SBIT)
+				// avoid altering ADD.S/ADC sequences.
+				break;
 			if(p1->from.type == D_REG ||
 			   (p1->from.type == D_SHIFT && (p1->from.offset&(1<<4)) == 0 &&
 			    (p->as != AMOVB || (a == &p->from && (p1->from.offset&~0xf) == 0))) ||
@@ -1032,6 +1058,7 @@ copyu(Prog *p, Adr *v, Adr *s)
 		return 0;
 
 	case AMULLU:	/* read, read, write, write */
+	case AMULL:
 	case AMULA:
 	case AMVN:
 		return 2;
@@ -1135,12 +1162,9 @@ copyu(Prog *p, Adr *v, Adr *s)
 		return 0;
 
 	case ARET:	/* funny */
-		if(v->type == D_REG)
-		if(v->reg == REGRET)
-			return 2;
-		if(v->type == D_FREG)
-		if(v->reg == FREGRET)
-			return 2;
+		if(s != A)
+			return 1;
+		return 3;
 
 	case ABL:	/* funny */
 		if(v->type == D_REG) {
@@ -1152,6 +1176,8 @@ copyu(Prog *p, Adr *v, Adr *s)
 		if(v->type == D_FREG)
 			if(v->reg <= FREGEXT && v->reg > exfregoffset)
 				return 2;
+		if(p->from.type == D_REG && v->type == D_REG && p->from.reg == v->reg)
+			return 2;
 
 		if(s != A) {
 			if(copysub(&p->to, v, s, 1))
@@ -1166,6 +1192,9 @@ copyu(Prog *p, Adr *v, Adr *s)
 		if(v->type == D_REG)
 			if(v->reg == (uchar)REGARG)
 				return 3;
+		return 0;
+
+	case ALOCALS:	/* funny */
 		return 0;
 	}
 }
@@ -1213,7 +1242,7 @@ copyau(Adr *a, Adr *v)
 			if(a->reg == v->reg)
 				return 1;
 		} else
-		if(a->type == D_REGREG) {
+		if(a->type == D_REGREG || a->type == D_REGREG2) {
 			if(a->reg == v->reg)
 				return 1;
 			if(a->offset == v->reg)
@@ -1276,7 +1305,7 @@ copysub(Adr *a, Adr *v, Adr *s, int f)
 			if((a->offset&(1<<4)) && (a->offset>>8) == v->reg)
 				a->offset = (a->offset&~(0xf<<8))|(s->reg<<8);
 		} else
-		if(a->type == D_REGREG) {
+		if(a->type == D_REGREG || a->type == D_REGREG2) {
 			if(a->offset == v->reg)
 				a->offset = s->reg;
 			if(a->reg == v->reg)

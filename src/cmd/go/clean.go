@@ -34,6 +34,7 @@ source directories corresponding to the import paths:
 	DIR(.exe)        from go build
 	DIR.test(.exe)   from go test -c
 	MAINFILE(.exe)   from go build MAINFILE.go
+	*.so             from SWIG
 
 In the list, DIR represents the final path element of the
 directory, and MAINFILE is the base name of any Go source
@@ -93,17 +94,20 @@ var cleanFile = map[string]bool{
 }
 
 var cleanExt = map[string]bool{
-	".5": true,
-	".6": true,
-	".8": true,
-	".a": true,
-	".o": true,
+	".5":  true,
+	".6":  true,
+	".8":  true,
+	".a":  true,
+	".o":  true,
+	".so": true,
 }
 
 func clean(p *Package) {
 	if cleaned[p] {
 		return
 	}
+	cleaned[p] = true
+
 	if p.Dir == "" {
 		errorf("can't load package: %v", p.Error)
 		return
@@ -168,7 +172,9 @@ func clean(p *Package) {
 						continue
 					}
 				}
-				os.RemoveAll(filepath.Join(p.Dir, name))
+				if err := os.RemoveAll(filepath.Join(p.Dir, name)); err != nil {
+					errorf("go clean: %v", err)
+				}
 			}
 			continue
 		}
@@ -178,7 +184,7 @@ func clean(p *Package) {
 		}
 
 		if cleanFile[name] || cleanExt[filepath.Ext(name)] || toRemove[name] {
-			os.Remove(filepath.Join(p.Dir, name))
+			removeFile(filepath.Join(p.Dir, name))
 		}
 	}
 
@@ -187,7 +193,21 @@ func clean(p *Package) {
 			b.showcmd("", "rm -f %s", p.target)
 		}
 		if !cleanN {
-			os.Remove(p.target)
+			removeFile(p.target)
+		}
+	}
+
+	if cleanI && p.usesSwig() {
+		for _, f := range stringList(p.SwigFiles, p.SwigCXXFiles) {
+			dir := p.swigDir(&buildContext)
+			soname := p.swigSoname(f)
+			target := filepath.Join(dir, soname)
+			if cleanN || cleanX {
+				b.showcmd("", "rm -f %s", target)
+			}
+			if !cleanN {
+				removeFile(target)
+			}
 		}
 	}
 
@@ -195,5 +215,13 @@ func clean(p *Package) {
 		for _, p1 := range p.imports {
 			clean(p1)
 		}
+	}
+}
+
+// removeFile tries to remove file f, if error other than file doesn't exist
+// occurs, it will report the error.
+func removeFile(f string) {
+	if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+		errorf("go clean: %v", err)
 	}
 }

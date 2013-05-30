@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build plan9 darwin,!cgo
+// +build darwin,!cgo
 
 package x509
 
@@ -11,5 +11,4 @@ func (c *Certificate) systemVerify(opts *VerifyOptions) (chains [][]*Certificate
 }
 
 func initSystemRoots() {
-	systemRoots = NewCertPool()
 }

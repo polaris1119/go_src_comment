@@ -52,7 +52,7 @@
 %token	<lval>	LTYPE6 LTYPE7 LTYPE8 LTYPE9 LTYPEA
 %token	<lval>	LTYPEB LTYPEC LTYPED LTYPEE LTYPEF
 %token	<lval>	LTYPEG LTYPEH LTYPEI LTYPEJ LTYPEK
-%token	<lval>	LTYPEL LTYPEM LTYPEN LTYPEBX
+%token	<lval>	LTYPEL LTYPEM LTYPEN LTYPEBX LTYPEPLD
 %token	<lval>	LCONST LSP LSB LFP LPC
 %token	<lval>	LTYPEX LR LREG LF LFREG LC LCREG LPSR LFCR
 %token	<lval>	LCOND LS LAT
@@ -286,20 +286,28 @@ inst:
 		outcode(AWORD, Always, &nullgen, NREG, &g);
 	}
 /*
- * MULL hi,lo,r1,r2
+ * MULL r1,r2,(hi,lo)
  */
 |	LTYPEM cond reg ',' reg ',' regreg
 	{
 		outcode($1, $2, &$3, $5.reg, &$7);
 	}
 /*
- * MULA hi,lo,r1,r2
+ * MULA r1,r2,r3,r4: (r1*r2+r3) & 0xffffffff -> r4
+ * MULAW{T,B} r1,r2,r3,r4
  */
 |	LTYPEN cond reg ',' reg ',' reg ',' spreg
 	{
-		$7.type = D_REGREG;
+		$7.type = D_REGREG2;
 		$7.offset = $9;
 		outcode($1, $2, &$3, $5.reg, &$7);
+	}
+/*
+ * PLD
+ */
+|	LTYPEPLD oreg
+	{
+		outcode($1, Always, &$2, NREG, &nullgen);
 	}
 /*
  * END

@@ -39,6 +39,7 @@ TEXT runtime·thr_start(SB),7,$0
 	MOVL	AX, m(CX)
 	CALL	runtime·stackcheck(SB)		// smashes AX
 	CALL	runtime·mstart(SB)
+
 	MOVL	0, AX			// crash (not reached)
 
 // Exit the entire program (like C exit)
@@ -55,6 +56,21 @@ TEXT runtime·exit1(SB),7,$-4
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
+TEXT runtime·open(SB),7,$-4
+	MOVL	$5, AX
+	INT	$0x80
+	RET
+
+TEXT runtime·close(SB),7,$-4
+	MOVL	$6, AX
+	INT	$0x80
+	RET
+
+TEXT runtime·read(SB),7,$-4
+	MOVL	$3, AX
+	INT	$0x80
+	RET
+
 TEXT runtime·write(SB),7,$-4
 	MOVL	$4, AX
 	INT	$0x80
@@ -65,16 +81,17 @@ TEXT runtime·getrlimit(SB),7,$-4
 	INT	$0x80
 	RET
 
-TEXT runtime·raisesigpipe(SB),7,$12
+TEXT runtime·raise(SB),7,$16
 	// thr_self(&8(SP))
 	LEAL	8(SP), AX
-	MOVL	AX, 0(SP)
+	MOVL	AX, 4(SP)
 	MOVL	$432, AX
 	INT	$0x80
 	// thr_kill(self, SIGPIPE)
 	MOVL	8(SP), AX
-	MOVL	AX, 0(SP)
-	MOVL	$13, 4(SP)
+	MOVL	AX, 4(SP)
+	MOVL	sig+0(FP), AX
+	MOVL	AX, 8(SP)
 	MOVL	$433, AX
 	INT	$0x80
 	RET
@@ -89,7 +106,7 @@ TEXT runtime·mmap(SB),7,$32
 	MOVSL
 	MOVSL
 	MOVSL
-	MOVL	$0, AX	// top 64 bits of file offset
+	MOVL	$0, AX	// top 32 bits of file offset
 	STOSL
 	MOVL	$477, AX
 	INT	$0x80
@@ -102,6 +119,12 @@ TEXT runtime·munmap(SB),7,$-4
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 
+TEXT runtime·madvise(SB),7,$-4
+	MOVL	$75, AX	// madvise
+	INT	$0x80
+	// ignore failure - maybe pages are locked
+	RET
+
 TEXT runtime·setitimer(SB), 7, $-4
 	MOVL	$83, AX
 	INT	$0x80
@@ -109,40 +132,38 @@ TEXT runtime·setitimer(SB), 7, $-4
 
 // func now() (sec int64, nsec int32)
 TEXT time·now(SB), 7, $32
-	MOVL	$116, AX
+	MOVL	$232, AX
 	LEAL	12(SP), BX
-	MOVL	BX, 4(SP)
-	MOVL	$0, 8(SP)
+	MOVL	$0, 4(SP)
+	MOVL	BX, 8(SP)
 	INT	$0x80
 	MOVL	12(SP), AX	// sec
-	MOVL	16(SP), BX	// usec
+	MOVL	16(SP), BX	// nsec
 
-	// sec is in AX, usec in BX
+	// sec is in AX, nsec in BX
 	MOVL	AX, sec+0(FP)
 	MOVL	$0, sec+4(FP)
-	IMULL	$1000, BX
 	MOVL	BX, nsec+8(FP)
 	RET
 
 // int64 nanotime(void) so really
 // void nanotime(int64 *nsec)
 TEXT runtime·nanotime(SB), 7, $32
-	MOVL	$116, AX
+	MOVL	$232, AX
 	LEAL	12(SP), BX
-	MOVL	BX, 4(SP)
-	MOVL	$0, 8(SP)
+	MOVL	$0, 4(SP)
+	MOVL	BX, 8(SP)
 	INT	$0x80
 	MOVL	12(SP), AX	// sec
-	MOVL	16(SP), BX	// usec
+	MOVL	16(SP), BX	// nsec
 
-	// sec is in AX, usec in BX
+	// sec is in AX, nsec in BX
 	// convert to DX:AX nsec
 	MOVL	$1000000000, CX
 	MULL	CX
-	IMULL	$1000, BX
 	ADDL	BX, AX
 	ADCL	$0, DX
-	
+
 	MOVL	ret+0(FP), DI
 	MOVL	AX, 0(DI)
 	MOVL	DX, 4(DI)
@@ -162,8 +183,11 @@ TEXT runtime·sigtramp(SB),7,$44
 	// check that m exists
 	MOVL	m(CX), BX
 	CMPL	BX, $0
-	JNE	2(PC)
+	JNE	5(PC)
+	MOVL	signo+0(FP), BX
+	MOVL	BX, 0(SP)
 	CALL	runtime·badsignal(SB)
+	RET
 
 	// save g
 	MOVL	g(CX), DI

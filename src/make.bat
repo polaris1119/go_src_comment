@@ -60,13 +60,16 @@ echo # Building C bootstrap tool.
 echo cmd/dist
 if not exist ..\bin\tool mkdir ..\bin\tool
 :: Windows has no glob expansion, so spell out cmd/dist/*.c.
-gcc -O2 -Wall -Werror -o cmd/dist/dist.exe -Icmd/dist %DEFGOROOT% cmd/dist/buf.c cmd/dist/build.c cmd/dist/buildgc.c cmd/dist/buildruntime.c cmd/dist/goc2c.c cmd/dist/main.c cmd/dist/windows.c
+gcc -O2 -Wall -Werror -o cmd/dist/dist.exe -Icmd/dist %DEFGOROOT% cmd/dist/buf.c cmd/dist/build.c cmd/dist/buildgc.c cmd/dist/buildruntime.c cmd/dist/goc2c.c cmd/dist/main.c cmd/dist/windows.c cmd/dist/arm.c
 if errorlevel 1 goto fail
 .\cmd\dist\dist env -wp >env.bat
 if errorlevel 1 goto fail
 call env.bat
 del env.bat
 echo.
+
+if x%1==x--dist-tool goto copydist
+if x%2==x--dist-tool goto copydist
 
 echo # Building compilers and Go bootstrap tool.
 set buildall=-a
@@ -103,6 +106,11 @@ if x%1==x--no-banner goto nobanner
 "%GOTOOLDIR%\dist" banner
 :nobanner
 
+goto end
+
+:copydist
+mkdir "%GOTOOLDIR%" 2>NUL
+copy cmd\dist\dist.exe "%GOTOOLDIR%\"
 goto end
 
 :fail

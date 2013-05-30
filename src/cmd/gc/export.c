@@ -22,22 +22,8 @@ exportsym(Node *n)
 	}
 	n->sym->flags |= SymExport;
 
-	exportlist = list(exportlist, n);
-}
-
-// Mark n's symbol as package-local
-static void
-packagesym(Node *n)
-{
-	if(n == N || n->sym == S)
-		return;
-	if(n->sym->flags & (SymExport|SymPackage)) {
-		if(n->sym->flags & SymExport)
-			yyerror("export/package mismatch: %S", n->sym);
-		return;
-	}
-	n->sym->flags |= SymPackage;
-
+	if(debug['E'])
+		print("export symbol %S\n", n->sym);
 	exportlist = list(exportlist, n);
 }
 
@@ -58,6 +44,18 @@ initname(char *s)
 	return strcmp(s, "init") == 0;
 }
 
+// exportedsym returns whether a symbol will be visible
+// to files that import our package.
+static int
+exportedsym(Sym *sym)
+{
+	// Builtins are visible everywhere.
+	if(sym->pkg == builtinpkg || sym->origpkg == builtinpkg)
+		return 1;
+
+	return sym->pkg == localpkg && exportname(sym->name);
+}
+
 void
 autoexport(Node *n, int ctxt)
 {
@@ -67,10 +65,9 @@ autoexport(Node *n, int ctxt)
 		return;
 	if(n->ntype && n->ntype->op == OTFUNC && n->ntype->left)	// method
 		return;
-	if(exportname(n->sym->name) || initname(n->sym->name))
+	// -A is for cmd/gc/mkbuiltin script, so export everything
+	if(debug['A'] || exportname(n->sym->name) || initname(n->sym->name))
 		exportsym(n);
-	else
-		packagesym(n);
 }
 
 static void
@@ -104,36 +101,60 @@ reexportdep(Node *n)
 	if(!n)
 		return;
 
-//	print("reexportdep %+hN\n", n);
+	//print("reexportdep %+hN\n", n);
 	switch(n->op) {
 	case ONAME:
 		switch(n->class&~PHEAP) {
 		case PFUNC:
 			// methods will be printed along with their type
+			// nodes for T.Method expressions
+			if(n->left && n->left->op == OTYPE)
+				break;
+			// nodes for method calls.
 			if(!n->type || n->type->thistuple > 0)
 				break;
 			// fallthrough
 		case PEXTERN:
-			if (n->sym && n->sym->pkg != localpkg && n->sym->pkg != builtinpkg)
+			if(n->sym && !exportedsym(n->sym)) {
+				if(debug['E'])
+					print("reexport name %S\n", n->sym);
 				exportlist = list(exportlist, n);
+			}
 		}
 		break;
 
+	case ODCL:
+		// Local variables in the bodies need their type.
+		t = n->left->type;
+		if(t != types[t->etype] && t != idealbool && t != idealstring) {
+			if(isptr[t->etype])
+				t = t->type;
+			if(t && t->sym && t->sym->def && !exportedsym(t->sym)) {
+				if(debug['E'])
+					print("reexport type %S from declaration\n", t->sym);
+				exportlist = list(exportlist, t->sym->def);
+			}
+		}
+		break;
 
 	case OLITERAL:
 		t = n->type;
 		if(t != types[n->type->etype] && t != idealbool && t != idealstring) {
 			if(isptr[t->etype])
 				t = t->type;
-			if (t && t->sym && t->sym->def && t->sym->pkg != localpkg  && t->sym->pkg != builtinpkg) {
-//				print("reexport literal type %+hN\n", t->sym->def);
+			if(t && t->sym && t->sym->def && !exportedsym(t->sym)) {
+				if(debug['E'])
+					print("reexport literal type %S\n", t->sym);
 				exportlist = list(exportlist, t->sym->def);
 			}
 		}
 		// fallthrough
 	case OTYPE:
-		if (n->sym && n->sym->pkg != localpkg && n->sym->pkg != builtinpkg)
+		if(n->sym && !exportedsym(n->sym)) {
+			if(debug['E'])
+				print("reexport literal/type %S\n", n->sym);
 			exportlist = list(exportlist, n);
+		}
 		break;
 
 	// for operations that need a type when rendered, put the type on the export list.
@@ -141,13 +162,15 @@ reexportdep(Node *n)
 	case OCONVIFACE:
 	case OCONVNOP:
 	case ODOTTYPE:
+	case ODOTTYPE2:
 	case OSTRUCTLIT:
 	case OPTRLIT:
 		t = n->type;
 		if(!t->sym && t->type)
 			t = t->type;
-		if (t && t->sym && t->sym->def && t->sym->pkg != localpkg  && t->sym->pkg != builtinpkg) {
-//			print("reexport convnop %+hN\n", t->sym->def);
+		if(t && t->sym && t->sym->def && !exportedsym(t->sym)) {
+			if(debug['E'])
+				print("reexport type for convnop %S\n", t->sym);
 			exportlist = list(exportlist, t->sym->def);
 		}
 		break;
@@ -207,10 +230,11 @@ dumpexportvar(Sym *s)
 			// currently that can leave unresolved ONONAMEs in import-dot-ed packages in the wrong package
 			if(debug['l'] < 2)
 				typecheckinl(n);
-			Bprint(bout, "\tfunc %#S%#hT { %#H }\n", s, t, n->inl);
+			// NOTE: The space after %#S here is necessary for ld's export data parser.
+			Bprint(bout, "\tfunc %#S %#hT { %#H }\n", s, t, n->inl);
 			reexportdeplist(n->inl);
 		} else
-			Bprint(bout, "\tfunc %#S%#hT\n", s, t);
+			Bprint(bout, "\tfunc %#S %#hT\n", s, t);
 	} else
 		Bprint(bout, "\tvar %#S %#T\n", s, t);
 }
@@ -262,15 +286,17 @@ dumpexporttype(Type *t)
 	Bprint(bout, "\ttype %#S %#lT\n", t->sym, t);
 	for(i=0; i<n; i++) {
 		f = m[i];
+		if(f->nointerface)
+			Bprint(bout, "\t//go:nointerface\n");
 		if (f->type->nname && f->type->nname->inl) { // nname was set by caninl
 			// when lazily typechecking inlined bodies, some re-exported ones may not have been typechecked yet.
 			// currently that can leave unresolved ONONAMEs in import-dot-ed packages in the wrong package
 			if(debug['l'] < 2)
 				typecheckinl(f->type->nname);
-			Bprint(bout, "\tfunc (%#T) %#hhS%#hT { %#H }\n", getthisx(f->type)->type, f->sym, f->type, f->type->nname->inl);
+			Bprint(bout, "\tfunc (%#T) %#hhS %#hT { %#H }\n", getthisx(f->type)->type, f->sym, f->type, f->type->nname->inl);
 			reexportdeplist(f->type->nname->inl);
 		} else
-			Bprint(bout, "\tfunc (%#T) %#hhS%#hT\n", getthisx(f->type)->type, f->sym, f->type);
+			Bprint(bout, "\tfunc (%#T) %#hhS %#hT\n", getthisx(f->type)->type, f->sym, f->type);
 	}
 }
 
@@ -349,8 +375,12 @@ dumpexport(void)
 Sym*
 importsym(Sym *s, int op)
 {
-	if(s->def != N && s->def->op != op)
-		redeclare(s, "during import");
+	char *pkgstr;
+
+	if(s->def != N && s->def->op != op) {
+		pkgstr = smprint("during import \"%Z\"", importpkg->path);
+		redeclare(s, pkgstr);
+	}
 
 	// mark the symbol so it is not reexported
 	if(s->def == N) {
@@ -389,6 +419,8 @@ importimport(Sym *s, Strlit *z)
 	// human-readable messages.
 	Pkg *p;
 
+	if(isbadimport(z))
+		errorexit();
 	p = mkpkg(z);
 	if(p->name == nil) {
 		p->name = s->name;

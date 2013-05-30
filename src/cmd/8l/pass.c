@@ -75,6 +75,7 @@ nofollow(int a)
 	case ARET:
 	case AIRETL:
 	case AIRETW:
+	case AUNDEF:
 		return 1;
 	}
 	return 0;
@@ -184,20 +185,34 @@ loop:
 		 * recurse to follow one path.
 		 * continue loop on the other.
 		 */
-		q = brchain(p->link);
-		if(q != P && q->mark)
-		if(a != ALOOP) {
-			p->as = relinv(a);
-			p->link = p->pcond;
+		if((q = brchain(p->pcond)) != P)
 			p->pcond = q;
+		if((q = brchain(p->link)) != P)
+			p->link = q;
+		if(p->from.type == D_CONST) {
+			if(p->from.offset == 1) {
+				/*
+				 * expect conditional jump to be taken.
+				 * rewrite so that's the fall-through case.
+				 */
+				p->as = relinv(a);
+				q = p->link;
+				p->link = p->pcond;
+				p->pcond = q;
+			}
+		} else {
+			q = p->link;
+			if(q->mark)
+			if(a != ALOOP) {
+				p->as = relinv(a);
+				p->link = p->pcond;
+				p->pcond = q;
+			}
 		}
 		xfol(p->link, last);
-		q = brchain(p->pcond);
-		if(q->mark) {
-			p->pcond = q;
+		if(p->pcond->mark)
 			return;
-		}
-		p = q;
+		p = p->pcond;
 		goto loop;
 	}
 	p = p->link;
@@ -281,16 +296,23 @@ patch(void)
 				//	MOVL 0(GS), reg
 				// and then off(reg) instead of saying off(GS) directly
 				// when the offset is negative.
+				// In external mode we just produce a reloc.
 				if(p->from.type == D_INDIR+D_GS && p->from.offset < 0
 				&& p->to.type >= D_AX && p->to.type <= D_DI) {
-					q = appendp(p);
-					q->from = p->from;
-					q->from.type = D_INDIR + p->to.type;
-					q->to = p->to;
-					q->as = p->as;
-					p->as = AMOVL;
-					p->from.type = D_INDIR+D_GS;
-					p->from.offset = 0;
+					if(linkmode != LinkExternal) {
+						q = appendp(p);
+						q->from = p->from;
+						q->from.type = D_INDIR + p->to.type;
+						q->to = p->to;
+						q->as = p->as;
+						p->as = AMOVL;
+						p->from.type = D_INDIR+D_GS;
+						p->from.offset = 0;
+					} else {
+						// Add signals to relocate.
+						p->from.index = D_GS;
+						p->from.scale = 1;
+					}
 				}
 			}
 			if(HEADTYPE == Hplan9x32) {
@@ -315,7 +337,7 @@ patch(void)
 				} else if(s) {
 					if(debug['c'])
 						Bprint(&bso, "%s calls %s\n", TNAME, s->name);
-					if((s->type&~SSUB) != STEXT) {
+					if((s->type&SMASK) != STEXT) {
 						/* diag prints TNAME first */
 						diag("undefined: %s", s->name);
 						s->type = STEXT;
@@ -435,16 +457,25 @@ dostkoff(void)
 				break;
 			
 			case Hlinux:
-				p->as = AMOVL;
-				p->from.type = D_INDIR+D_GS;
-				p->from.offset = 0;
-				p->to.type = D_CX;
+				if(linkmode != LinkExternal) {
+					p->as = AMOVL;
+					p->from.type = D_INDIR+D_GS;
+					p->from.offset = 0;
+					p->to.type = D_CX;
 
-				p = appendp(p);
-				p->as = AMOVL;
-				p->from.type = D_INDIR+D_CX;
-				p->from.offset = tlsoffset + 0;
-				p->to.type = D_CX;
+					p = appendp(p);
+					p->as = AMOVL;
+					p->from.type = D_INDIR+D_CX;
+					p->from.offset = tlsoffset + 0;
+					p->to.type = D_CX;
+				} else {
+					p->as = AMOVL;
+					p->from.type = D_INDIR+D_GS;
+					p->from.offset = tlsoffset + 0;
+					p->to.type = D_CX;
+					p->from.index = D_GS;
+					p->from.scale = 1;
+				}
 				break;
 			
 			case Hplan9x32:
@@ -524,9 +555,9 @@ dostkoff(void)
 				q = p;
 			}
 
-			p = appendp(p);	// save frame size in DX
+			p = appendp(p);	// save frame size in DI
 			p->as = AMOVL;
-			p->to.type = D_DX;
+			p->to.type = D_DI;
 			p->from.type = D_CONST;
 
 			// If we ask for more stack, we'll get a minimum of StackMin bytes.
@@ -565,8 +596,46 @@ dostkoff(void)
 			p->spadj = autoffset;
 			if(q != P)
 				q->pcond = p;
+		} else {
+			// zero-byte stack adjustment.
+			// Insert a fake non-zero adjustment so that stkcheck can
+			// recognize the end of the stack-splitting prolog.
+			p = appendp(p);
+			p->as = ANOP;
+			p->spadj = -PtrSize;
+			p = appendp(p);
+			p->as = ANOP;
+			p->spadj = PtrSize;
 		}
 		deltasp = autoffset;
+		
+		if(debug['Z'] && autoffset && !(cursym->text->from.scale&NOSPLIT)) {
+			// 8l -Z means zero the stack frame on entry.
+			// This slows down function calls but can help avoid
+			// false positives in garbage collection.
+			p = appendp(p);
+			p->as = AMOVL;
+			p->from.type = D_SP;
+			p->to.type = D_DI;
+			
+			p = appendp(p);
+			p->as = AMOVL;
+			p->from.type = D_CONST;
+			p->from.offset = autoffset/4;
+			p->to.type = D_CX;
+			
+			p = appendp(p);
+			p->as = AMOVL;
+			p->from.type = D_CONST;
+			p->from.offset = 0;
+			p->to.type = D_AX;
+			
+			p = appendp(p);
+			p->as = AREP;
+			
+			p = appendp(p);
+			p->as = ASTOSL;
+		}
 		
 		for(; p != P; p = p->link) {
 			a = p->from.type;

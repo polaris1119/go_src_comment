@@ -1,4 +1,4 @@
-// Copyright 20011 The Go Authors. All rights reserved.
+// Copyright 2011 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -140,6 +140,18 @@ type GobTest4 struct {
 type GobTest5 struct {
 	X int // guarantee we have  something in common with GobTest*
 	V *ValueGobber
+}
+
+type GobTest6 struct {
+	X int // guarantee we have  something in common with GobTest*
+	V ValueGobber
+	W *ValueGobber
+}
+
+type GobTest7 struct {
+	X int // guarantee we have  something in common with GobTest*
+	V *ValueGobber
+	W ValueGobber
 }
 
 type GobTestIgnoreEncoder struct {
@@ -336,7 +348,7 @@ func TestGobEncoderFieldsOfDifferentType(t *testing.T) {
 		t.Fatal("decode error:", err)
 	}
 	if y.G.s != "XYZ" {
-		t.Fatalf("expected `XYZ` got %c", y.G.s)
+		t.Fatalf("expected `XYZ` got %q", y.G.s)
 	}
 }
 
@@ -357,6 +369,61 @@ func TestGobEncoderValueEncoder(t *testing.T) {
 	}
 	if *x.V != "hello" {
 		t.Errorf("expected `hello` got %s", x.V)
+	}
+}
+
+// Test that we can use a value then a pointer type of a GobEncoder
+// in the same encoded value.  Bug 4647.
+func TestGobEncoderValueThenPointer(t *testing.T) {
+	v := ValueGobber("forty-two")
+	w := ValueGobber("six-by-nine")
+
+	// this was a bug: encoding a GobEncoder by value before a GobEncoder
+	// pointer would cause duplicate type definitions to be sent.
+
+	b := new(bytes.Buffer)
+	enc := NewEncoder(b)
+	if err := enc.Encode(GobTest6{42, v, &w}); err != nil {
+		t.Fatal("encode error:", err)
+	}
+	dec := NewDecoder(b)
+	x := new(GobTest6)
+	if err := dec.Decode(x); err != nil {
+		t.Fatal("decode error:", err)
+	}
+	if got, want := x.V, v; got != want {
+		t.Errorf("v = %q, want %q", got, want)
+	}
+	if got, want := x.W, w; got == nil {
+		t.Errorf("w = nil, want %q", want)
+	} else if *got != want {
+		t.Errorf("w = %q, want %q", *got, want)
+	}
+}
+
+// Test that we can use a pointer then a value type of a GobEncoder
+// in the same encoded value.
+func TestGobEncoderPointerThenValue(t *testing.T) {
+	v := ValueGobber("forty-two")
+	w := ValueGobber("six-by-nine")
+
+	b := new(bytes.Buffer)
+	enc := NewEncoder(b)
+	if err := enc.Encode(GobTest7{42, &v, w}); err != nil {
+		t.Fatal("encode error:", err)
+	}
+	dec := NewDecoder(b)
+	x := new(GobTest7)
+	if err := dec.Decode(x); err != nil {
+		t.Fatal("decode error:", err)
+	}
+	if got, want := x.V, v; got == nil {
+		t.Errorf("v = nil, want %q", want)
+	} else if *got != want {
+		t.Errorf("v = %q, want %q", got, want)
+	}
+	if got, want := x.W, w; got != want {
+		t.Errorf("w = %q, want %q", got, want)
 	}
 }
 

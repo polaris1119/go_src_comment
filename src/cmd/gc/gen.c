@@ -266,6 +266,8 @@ gen(Node *n)
 	Label *lab;
 	int32 wasregalloc;
 
+//dump("gen", n);
+
 	lno = setlineno(n);
 	wasregalloc = anyregalloc();
 
@@ -279,7 +281,7 @@ gen(Node *n)
 
 	switch(n->op) {
 	default:
-		fatal("gen: unknown op %N", n);
+		fatal("gen: unknown op %+hN", n);
 		break;
 
 	case OCASE:
@@ -394,7 +396,7 @@ gen(Node *n)
 		}
 		gen(n->nincr);				// contin:	incr
 		patch(p1, pc);				// test:
-		bgen(n->ntest, 0, breakpc);		//		if(!test) goto break
+		bgen(n->ntest, 0, -1, breakpc);		//		if(!test) goto break
 		genlist(n->nbody);				//		body
 		gjmp(continpc);
 		patch(breakpc, pc);			// done:
@@ -410,7 +412,7 @@ gen(Node *n)
 		p1 = gjmp(P);			//		goto test
 		p2 = gjmp(P);			// p2:		goto else
 		patch(p1, pc);				// test:
-		bgen(n->ntest, 0, p2);			//		if(!test) goto p2
+		bgen(n->ntest, 0, -n->likely, p2);		//		if(!test) goto p2
 		genlist(n->nbody);				//		then
 		p3 = gjmp(P);			//		goto done
 		patch(p2, pc);				// else:
@@ -489,6 +491,9 @@ gen(Node *n)
 	case ORETURN:
 		cgen_ret(n);
 		break;
+	
+	case OCHECKNOTNIL:
+		checkref(n->left, 1);
 	}
 
 ret:
@@ -509,22 +514,24 @@ ret:
 void
 cgen_callmeth(Node *n, int proc)
 {
+	Node n2;
 	Node *l;
 
-	// generate a rewrite for method call
+	// generate a rewrite in n2 for the method call
 	// (p.f)(...) goes to (f)(p,...)
 
 	l = n->left;
 	if(l->op != ODOTMETH)
 		fatal("cgen_callmeth: not dotmethod: %N");
 
-	n->op = OCALLFUNC;
-	n->left = n->left->right;
-	n->left->type = l->type;
+	n2 = *n;
+	n2.op = OCALLFUNC;
+	n2.left = l->right;
+	n2.left->type = l->type;
 
-	if(n->left->op == ONAME)
-		n->left->class = PFUNC;
-	cgen_call(n, proc);
+	if(n2.left->op == ONAME)
+		n2.left->class = PFUNC;
+	cgen_call(&n2, proc);
 }
 
 /*
@@ -631,6 +638,67 @@ cgen_discard(Node *nr)
 }
 
 /*
+ * clearslim generates code to zero a slim node.
+ */
+void
+clearslim(Node *n)
+{
+	Node z;
+	Mpflt zero;
+
+	memset(&z, 0, sizeof(z));
+	z.op = OLITERAL;
+	z.type = n->type;
+	z.addable = 1;
+
+	switch(simtype[n->type->etype]) {
+	case TCOMPLEX64:
+	case TCOMPLEX128:
+		z.val.u.cval = mal(sizeof(*z.val.u.cval));
+		mpmovecflt(&z.val.u.cval->real, 0.0);
+		mpmovecflt(&z.val.u.cval->imag, 0.0);
+		break;
+
+	case TFLOAT32:
+	case TFLOAT64:
+		mpmovecflt(&zero, 0.0);
+		z.val.ctype = CTFLT;
+		z.val.u.fval = &zero;
+		break;
+
+	case TPTR32:
+	case TPTR64:
+	case TCHAN:
+	case TMAP:
+		z.val.ctype = CTNIL;
+		break;
+
+	case TBOOL:
+		z.val.ctype = CTBOOL;
+		break;
+
+	case TINT8:
+	case TINT16:
+	case TINT32:
+	case TINT64:
+	case TUINT8:
+	case TUINT16:
+	case TUINT32:
+	case TUINT64:
+		z.val.ctype = CTINT;
+		z.val.u.xval = mal(sizeof(*z.val.u.xval));
+		mpmovecfix(z.val.u.xval, 0);
+		break;
+
+	default:
+		fatal("clearslim called on type %T", n->type);
+	}
+
+	ullmancalc(&z);
+	cgen(&z, n);
+}
+
+/*
  * generate assignment:
  *	nl = nr
  * nr == N means zero nl.
@@ -638,9 +706,7 @@ cgen_discard(Node *nr)
 void
 cgen_as(Node *nl, Node *nr)
 {
-	Node nc;
 	Type *tl;
-	int iszer;
 
 	if(debug['g']) {
 		dump("cgen_as", nl);
@@ -655,7 +721,6 @@ cgen_as(Node *nl, Node *nr)
 		return;
 	}
 
-	iszer = 0;
 	if(nr == N || isnil(nr)) {
 		// externals and heaps should already be clear
 		if(nr == N) {
@@ -670,59 +735,10 @@ cgen_as(Node *nl, Node *nr)
 			return;
 		if(isfat(tl)) {
 			clearfat(nl);
-			goto ret;
+			return;
 		}
-
-		/* invent a "zero" for the rhs */
-		iszer = 1;
-		nr = &nc;
-		memset(nr, 0, sizeof(*nr));
-		switch(simtype[tl->etype]) {
-		default:
-			fatal("cgen_as: tl %T", tl);
-			break;
-
-		case TINT8:
-		case TUINT8:
-		case TINT16:
-		case TUINT16:
-		case TINT32:
-		case TUINT32:
-		case TINT64:
-		case TUINT64:
-			nr->val.u.xval = mal(sizeof(*nr->val.u.xval));
-			mpmovecfix(nr->val.u.xval, 0);
-			nr->val.ctype = CTINT;
-			break;
-
-		case TFLOAT32:
-		case TFLOAT64:
-			nr->val.u.fval = mal(sizeof(*nr->val.u.fval));
-			mpmovecflt(nr->val.u.fval, 0.0);
-			nr->val.ctype = CTFLT;
-			break;
-
-		case TBOOL:
-			nr->val.u.bval = 0;
-			nr->val.ctype = CTBOOL;
-			break;
-
-		case TPTR32:
-		case TPTR64:
-			nr->val.ctype = CTNIL;
-			break;
-
-		case TCOMPLEX64:
-		case TCOMPLEX128:
-			nr->val.u.cval = mal(sizeof(*nr->val.u.cval));
-			mpmovecflt(&nr->val.u.cval->real, 0.0);
-			mpmovecflt(&nr->val.u.cval->imag, 0.0);
-			break;
-		}
-		nr->op = OLITERAL;
-		nr->type = tl;
-		nr->addable = 1;
-		ullmancalc(nr);
+		clearslim(nl);
+		return;
 	}
 
 	tl = nl->type;
@@ -730,11 +746,88 @@ cgen_as(Node *nl, Node *nr)
 		return;
 
 	cgen(nr, nl);
-	if(iszer && nl->addable)
-		gused(nl);
+}
 
-ret:
-	;
+/*
+ * generate:
+ *	res = iface{typ, data}
+ * n->left is typ
+ * n->right is data
+ */
+void
+cgen_eface(Node *n, Node *res)
+{
+	/* 
+	 * the right node of an eface may contain function calls that uses res as an argument,
+	 * so it's important that it is done first
+	 */
+	Node dst;
+	dst = *res;
+	dst.type = types[tptr];
+	dst.xoffset += widthptr;
+	cgen(n->right, &dst);
+	dst.xoffset -= widthptr;
+	cgen(n->left, &dst);
+}
+
+/*
+ * generate:
+ *	res = s[lo, hi];
+ * n->left is s
+ * n->list is (cap(s)-lo(TUINT), hi-lo(TUINT)[, lo*width(TUINTPTR)])
+ * caller (cgen) guarantees res is an addable ONAME.
+ */
+void
+cgen_slice(Node *n, Node *res)
+{
+	Node src, dst, *cap, *len, *offs, *add;
+
+	cap = n->list->n;
+	len = n->list->next->n;
+	offs = N;
+	if(n->list->next->next)
+		offs = n->list->next->next->n;
+
+	// dst.len = hi [ - lo ]
+	dst = *res;
+	dst.xoffset += Array_nel;
+	dst.type = types[simtype[TUINT]];
+	cgen(len, &dst);
+
+	if(n->op != OSLICESTR) {
+		// dst.cap = cap [ - lo ]
+		dst = *res;
+		dst.xoffset += Array_cap;
+		dst.type = types[simtype[TUINT]];
+		cgen(cap, &dst);
+	}
+
+	// dst.array = src.array  [ + lo *width ]
+	dst = *res;
+	dst.xoffset += Array_array;
+	dst.type = types[TUINTPTR];
+
+	if(n->op == OSLICEARR) {
+		if(!isptr[n->left->type->etype])
+			fatal("slicearr is supposed to work on pointer: %+N\n", n);
+		checkref(n->left, 0);
+	}
+
+	if(isnil(n->left)) {
+		tempname(&src, n->left->type);
+		cgen(n->left, &src);
+	} else
+		src = *n->left;
+	src.xoffset += Array_array;
+	src.type = types[TUINTPTR];
+
+	if(offs == N) {
+		cgen(&src, &dst);
+	} else {
+		add = nod(OADD, &src, offs);
+		typecheck(&add, Erv);
+		cgen(add, &dst);
+	}
 }
 
 /*
@@ -743,7 +836,7 @@ ret:
  * <0 is pointer to next field (+1)
  */
 int
-dotoffset(Node *n, int *oary, Node **nn)
+dotoffset(Node *n, int64 *oary, Node **nn)
 {
 	int i;
 

@@ -150,15 +150,34 @@ testdclstack(void)
 void
 redeclare(Sym *s, char *where)
 {
-	if(s->lastlineno == 0)
+	Strlit *pkgstr;
+	int line1, line2;
+
+	if(s->lastlineno == 0) {
+		pkgstr = s->origpkg ? s->origpkg->path : s->pkg->path;
 		yyerror("%S redeclared %s\n"
-			"\tprevious declaration during import",
-			s, where);
-	else
-		yyerror("%S redeclared %s\n"
+			"\tprevious declaration during import \"%Z\"",
+			s, where, pkgstr);
+	} else {
+		line1 = parserline();
+		line2 = s->lastlineno;
+		
+		// When an import and a declaration collide in separate files,
+		// present the import as the "redeclared", because the declaration
+		// is visible where the import is, but not vice versa.
+		// See issue 4510.
+		if(s->def == N) {
+			line2 = line1;
+			line1 = s->lastlineno;
+		}
+
+		yyerrorl(line1, "%S redeclared %s\n"
 			"\tprevious declaration at %L",
-			s, where, s->lastlineno);
+			s, where, line2);
+	}
 }
+
+static int vargen;
 
 /*
  * declare individual names - var, typ, const
@@ -168,7 +187,10 @@ declare(Node *n, int ctxt)
 {
 	Sym *s;
 	int gen;
-	static int typegen, vargen;
+	static int typegen;
+	
+	if(ctxt == PDISCARD)
+		return;
 
 	if(isblank(n))
 		return;
@@ -179,6 +201,9 @@ declare(Node *n, int ctxt)
 	// kludgy: typecheckok means we're past parsing.  Eg genwrapper may declare out of package names later.
 	if(importpkg == nil && !typecheckok && s->pkg != localpkg)
 		yyerror("cannot declare name %S", s);
+
+	if(ctxt == PEXTERN && strcmp(s->name, "init") == 0)
+		yyerror("cannot declare init - must be func", s);
 
 	gen = 0;
 	if(ctxt == PEXTERN) {
@@ -192,7 +217,7 @@ declare(Node *n, int ctxt)
 			curfn->dcl = list(curfn->dcl, n);
 		if(n->op == OTYPE)
 			gen = ++typegen;
-		else if(n->op == ONAME)
+		else if(n->op == ONAME && ctxt == PAUTO && strstr(s->name, "·") == nil)
 			gen = ++vargen;
 		pushdcl(s);
 		n->curfn = curfn;
@@ -200,8 +225,12 @@ declare(Node *n, int ctxt)
 	if(ctxt == PAUTO)
 		n->xoffset = 0;
 
-	if(s->block == block)
-		redeclare(s, "in this block");
+	if(s->block == block) {
+		// functype will print errors about duplicate function arguments.
+		// Don't repeat the error here.
+		if(ctxt != PPARAM && ctxt != PPARAMOUT)
+			redeclare(s, "in this block");
+	}
 
 	s->block = block;
 	s->lastlineno = parserline();
@@ -237,7 +266,7 @@ variter(NodeList *vl, Node *t, NodeList *el)
 
 	init = nil;
 	doexpr = el != nil;
-	
+
 	if(count(el) == 1 && count(vl) > 1) {
 		e = el->n;
 		as2 = nod(OAS2, N, N);
@@ -516,7 +545,7 @@ ifacedcl(Node *n)
 	if(n->op != ODCLFIELD || n->right == N)
 		fatal("ifacedcl");
 
-	dclcontext = PAUTO;
+	dclcontext = PPARAM;
 	markdcl();
 	funcdepth++;
 	n->outer = curfn;
@@ -527,6 +556,7 @@ ifacedcl(Node *n)
 	// seen the body of a function but since an interface
 	// field declaration does not have a body, we must
 	// call it now to pop the current declaration context.
+	dclcontext = PAUTO;
 	funcbody(n);
 }
 
@@ -568,6 +598,11 @@ funcargs(Node *nt)
 	if(nt->op != OTFUNC)
 		fatal("funcargs %O", nt->op);
 
+	// re-start the variable generation number
+	// we want to use small numbers for the return variables,
+	// so let them have the chunk starting at 1.
+	vargen = count(nt->rlist);
+
 	// declare the receiver and in arguments.
 	// no n->defn because type checking of func header
 	// will not fill in the types until later
@@ -579,6 +614,8 @@ funcargs(Node *nt)
 			n->left->op = ONAME;
 			n->left->ntype = n->right;
 			declare(n->left, PPARAM);
+			if(dclcontext == PAUTO)
+				n->left->vargen = ++vargen;
 		}
 	}
 	for(l=nt->list; l; l=l->next) {
@@ -589,29 +626,44 @@ funcargs(Node *nt)
 			n->left->op = ONAME;
 			n->left->ntype = n->right;
 			declare(n->left, PPARAM);
+			if(dclcontext == PAUTO)
+				n->left->vargen = ++vargen;
 		}
 	}
 
 	// declare the out arguments.
-	gen = 0;
+	gen = count(nt->list);
+	int i = 0;
 	for(l=nt->rlist; l; l=l->next) {
 		n = l->n;
+
 		if(n->op != ODCLFIELD)
 			fatal("funcargs out %O", n->op);
-		if(n->left != N) {
-			n->left->op = ONAME;
-			n->left->ntype = n->right;
-			if(isblank(n->left)) {
-				// Give it a name so we can assign to it during return.
-				// preserve the original in ->orig
-				nn = nod(OXXX, N, N);
-				*nn = *n->left;
-				n->left = nn;
-				snprint(namebuf, sizeof(namebuf), ".anon%d", gen++);
-				n->left->sym = lookup(namebuf);
-			}
-			declare(n->left, PPARAMOUT);
+
+		if(n->left == N) {
+			// give it a name so escape analysis has nodes to work with
+			snprint(namebuf, sizeof(namebuf), "~anon%d", gen++);
+			n->left = newname(lookup(namebuf));
+			// TODO: n->left->missing = 1;
+		} 
+
+		n->left->op = ONAME;
+
+		if(isblank(n->left)) {
+			// Give it a name so we can assign to it during return.
+			// preserve the original in ->orig
+			nn = nod(OXXX, N, N);
+			*nn = *n->left;
+			n->left = nn;
+			
+			snprint(namebuf, sizeof(namebuf), "~anon%d", gen++);
+			n->left->sym = lookup(namebuf);
 		}
+
+		n->left->ntype = n->right;
+		declare(n->left, PPARAMOUT);
+		if(dclcontext == PAUTO)
+			n->left->vargen = ++i;
 	}
 }
 
@@ -776,22 +828,24 @@ structfield(Node *n)
 	return f;
 }
 
+static uint32 uniqgen;
+
 static void
 checkdupfields(Type *t, char* what)
 {
-	Type* t1;
 	int lno;
 
 	lno = lineno;
 
-	for( ; t; t=t->down)
-		if(t->sym && t->nname && !isblank(t->nname))
-			for(t1=t->down; t1; t1=t1->down)
-				if(t1->sym == t->sym) {
-					lineno = t->nname->lineno;
-					yyerror("duplicate %s %s", what, t->sym->name);
-					break;
-				}
+	for( ; t; t=t->down) {
+		if(t->sym && t->nname && !isblank(t->nname)) {
+			if(t->sym->uniqgen == uniqgen) {
+				lineno = t->nname->lineno;
+				yyerror("duplicate %s %s", what, t->sym->name);
+			} else
+				t->sym->uniqgen = uniqgen;
+		}
+	}
 
 	lineno = lno;
 }
@@ -817,6 +871,7 @@ tostruct(NodeList *l)
 		if(f->broke)
 			t->broke = 1;
 
+	uniqgen++;
 	checkdupfields(t->type, "field");
 
 	if (!t->broke)
@@ -849,7 +904,6 @@ tofunargs(NodeList *l)
 		if(f->broke)
 			t->broke = 1;
 
-	checkdupfields(t->type, "argument");
 	return t;
 }
 
@@ -956,6 +1010,7 @@ tointerface(NodeList *l)
 		if(f->broke)
 			t->broke = 1;
 
+	uniqgen++;
 	checkdupfields(t->type, "method");
 	t = sortinter(t);
 	checkwidth(t);
@@ -979,8 +1034,11 @@ embedded(Sym *s)
 		*utfrune(name, CenterDot) = 0;
 	}
 
-	if(exportname(name) || s->pkg == builtinpkg)  // old behaviour, tests pass, but is it correct?
+	if(exportname(name))
 		n = newname(lookup(name));
+	else if(s->pkg == builtinpkg && importpkg != nil)
+		// The name of embedded builtins during imports belongs to importpkg.
+		n = newname(pkglookup(name, importpkg));
 	else
 		n = newname(pkglookup(name, s->pkg));
 	n = nod(ODCLFIELD, n, oldname(s));
@@ -1125,6 +1183,7 @@ functype(Node *this, NodeList *in, NodeList *out)
 {
 	Type *t;
 	NodeList *rcvr;
+	Sym *s;
 
 	t = typ(TFUNC);
 
@@ -1135,6 +1194,11 @@ functype(Node *this, NodeList *in, NodeList *out)
 	t->type->down = tofunargs(out);
 	t->type->down->down = tofunargs(in);
 
+	uniqgen++;
+	checkdupfields(t->type->type, "argument");
+	checkdupfields(t->type->down->type, "argument");
+	checkdupfields(t->type->down->down->type, "argument");
+
 	if (t->type->broke || t->type->down->broke || t->type->down->down->broke)
 		t->broke = 1;
 
@@ -1142,7 +1206,12 @@ functype(Node *this, NodeList *in, NodeList *out)
 		t->thistuple = 1;
 	t->outtuple = count(out);
 	t->intuple = count(in);
-	t->outnamed = t->outtuple > 0 && out->n->left != N;
+	t->outnamed = 0;
+	if(t->outtuple > 0 && out->n->left != N && out->n->left->orig != N) {
+		s = out->n->left->orig->sym;
+		if(s != S && s->name[0] != '~')
+			t->outnamed = 1;
+	}
 
 	return t;
 }
@@ -1250,7 +1319,7 @@ methodname1(Node *n, Node *t)
  * n is fieldname, pa is base type, t is function type
  */
 void
-addmethod(Sym *sf, Type *t, int local)
+addmethod(Sym *sf, Type *t, int local, int nointerface)
 {
 	Type *f, *d, *pa;
 	Node *n;
@@ -1270,6 +1339,8 @@ addmethod(Sym *sf, Type *t, int local)
 	f = methtype(pa, 1);
 	if(f == T) {
 		t = pa;
+		if(t == T) // rely on typecheck having complained before
+			return;
 		if(t != T) {
 			if(isptr[t->etype]) {
 				if(t->sym != S) {
@@ -1278,10 +1349,8 @@ addmethod(Sym *sf, Type *t, int local)
 				}
 				t = t->type;
 			}
-		}
-		if(t->broke) // rely on typecheck having complained before
-			return;
-		if(t != T) {
+			if(t->broke) // rely on typecheck having complained before
+				return;
 			if(t->sym == S) {
 				yyerror("invalid receiver type %T (%T is an unnamed type)", pa, t);
 				return;
@@ -1311,6 +1380,12 @@ addmethod(Sym *sf, Type *t, int local)
 		}
 	}
 
+	if(local && !pa->local) {
+		// defining method on non-local type.
+		yyerror("cannot define new methods on non-local type %T", pa);
+		return;
+	}
+
 	n = nod(ODCLFIELD, newname(sf), N);
 	n->type = t;
 
@@ -1326,13 +1401,8 @@ addmethod(Sym *sf, Type *t, int local)
 		return;
 	}
 
-	if(local && !pa->local) {
-		// defining method on non-local type.
-		yyerror("cannot define new methods on non-local type %T", pa);
-		return;
-	}
-
 	f = structfield(n);
+	f->nointerface = nointerface;
 
 	// during import unexported method names should be in the type's package
 	if(importpkg && f->sym && !exportname(f->sym->name) && f->sym->pkg != structpkg)
@@ -1382,4 +1452,21 @@ funccompile(Node *n, int isclosure)
 	curfn = nil;
 	funcdepth = 0;
 	dclcontext = PEXTERN;
+}
+
+Sym*
+funcsym(Sym *s)
+{
+	char *p;
+	Sym *s1;
+	
+	p = smprint("%s·f", s->name);
+	s1 = pkglookup(p, s->pkg);
+	free(p);
+	if(s1->def == N) {
+		s1->def = newname(s1);
+		s1->def->shortname = newname(s);
+		funcsyms = list(funcsyms, s1->def);
+	}
+	return s1;
 }

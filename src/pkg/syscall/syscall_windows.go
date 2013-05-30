@@ -7,6 +7,8 @@
 package syscall
 
 import (
+	errorspkg "errors"
+	"sync"
 	"unicode/utf16"
 	"unsafe"
 )
@@ -15,58 +17,21 @@ type Handle uintptr
 
 const InvalidHandle = ^Handle(0)
 
-/*
-
-small demo to detect version of windows you are running:
-
-package main
-
-import (
-	"syscall"
-)
-
-func abort(funcname string, err error) {
-	panic(funcname + " failed: " + err.Error())
-}
-
-func print_version(v uint32) {
-	major := byte(v)
-	minor := uint8(v >> 8)
-	build := uint16(v >> 16)
-	print("windows version ", major, ".", minor, " (Build ", build, ")\n")
-}
-
-func main() {
-	h, err := syscall.LoadLibrary("kernel32.dll")
-	if err != nil {
-		abort("LoadLibrary", err)
-	}
-	defer syscall.FreeLibrary(h)
-	proc, err := syscall.GetProcAddress(h, "GetVersion")
-	if err != nil {
-		abort("GetProcAddress", err)
-	}
-	r, _, _ := syscall.Syscall(uintptr(proc), 0, 0, 0, 0)
-	print_version(uint32(r))
-}
-
-*/
-
-// StringToUTF16 returns the UTF-16 encoding of the UTF-8 string s.
+// StringToUTF16 is deprecated. Use UTF16FromString instead.
 // If s contains a NUL byte this function panics instead of
 // returning an error.
 func StringToUTF16(s string) []uint16 {
-	a, err := utf16FromString(s)
+	a, err := UTF16FromString(s)
 	if err != nil {
 		panic("syscall: string with NUL passed to StringToUTF16")
 	}
 	return a
 }
 
-// utf16FromString returns the UTF-16 encoding of the UTF-8 string
+// UTF16FromString returns the UTF-16 encoding of the UTF-8 string
 // s, with a terminating NUL added. If s contains a NUL byte at any
 // location, it returns (nil, EINVAL).
-func utf16FromString(s string) ([]uint16, error) {
+func UTF16FromString(s string) ([]uint16, error) {
 	for i := 0; i < len(s); i++ {
 		if s[i] == 0 {
 			return nil, EINVAL
@@ -87,16 +52,16 @@ func UTF16ToString(s []uint16) string {
 	return string(utf16.Decode(s))
 }
 
-// StringToUTF16Ptr returns pointer to the UTF-16 encoding of the UTF-8 string s, with a terminating NUL added.
+// StringToUTF16Ptr is deprecated. Use UTF16PtrFromString instead.
 // If s contains a NUL byte this function panics instead of
 // returning an error.
 func StringToUTF16Ptr(s string) *uint16 { return &StringToUTF16(s)[0] }
 
-// utf16PtrFromString returns pointer to the UTF-16 encoding of
+// UTF16PtrFromString returns pointer to the UTF-16 encoding of
 // the UTF-8 string s, with a terminating NUL added. If s
 // contains a NUL byte at any location, it returns (nil, EINVAL).
-func utf16PtrFromString(s string) (*uint16, error) {
-	a, err := utf16FromString(s)
+func UTF16PtrFromString(s string) (*uint16, error) {
+	a, err := UTF16FromString(s)
 	if err != nil {
 		return nil, err
 	}
@@ -121,9 +86,10 @@ func (e Errno) Error() string {
 	b := make([]uint16, 300)
 	n, err := FormatMessage(flags, 0, uint32(e), langid(LANG_ENGLISH, SUBLANG_ENGLISH_US), b, nil)
 	if err != nil {
-		// TODO(brainman): Call FormatMessage again asking for "native" error message.
-		// http://code.google.com/p/go/issues/detail?id=3376 must be resolved first.
-		return "winapi error #" + itoa(int(e))
+		n, err = FormatMessage(flags, 0, uint32(e), 0, b, nil)
+		if err != nil {
+			return "winapi error #" + itoa(int(e))
+		}
 	}
 	// trim terminating \r and \n
 	for ; n > 0 && (b[n-1] == '\n' || b[n-1] == '\r'); n-- {
@@ -142,7 +108,7 @@ func (e Errno) Timeout() bool {
 // Converts a Go function to a function pointer conforming
 // to the stdcall calling convention.  This is useful when
 // interoperating with Windows code requiring callbacks.
-// Implemented in ../runtime/windows/syscall.goc
+// Implemented in ../runtime/syscall_windows.goc
 func NewCallback(fn interface{}) uintptr
 
 // windows api calls
@@ -178,6 +144,7 @@ func NewCallback(fn interface{}) uintptr
 //sys	GetQueuedCompletionStatus(cphandle Handle, qty *uint32, key *uint32, overlapped **Overlapped, timeout uint32) (err error)
 //sys	PostQueuedCompletionStatus(cphandle Handle, qty uint32, key uint32, overlapped *Overlapped) (err error)
 //sys	CancelIo(s Handle) (err error)
+//sys	CancelIoEx(s Handle, o *Overlapped) (err error)
 //sys	CreateProcess(appName *uint16, commandLine *uint16, procSecurity *SecurityAttributes, threadSecurity *SecurityAttributes, inheritHandles bool, creationFlags uint32, env *uint16, currentDir *uint16, startupInfo *StartupInfo, outProcInfo *ProcessInformation) (err error) = CreateProcessW
 //sys	OpenProcess(da uint32, inheritHandle bool, pid uint32) (handle Handle, err error)
 //sys	TerminateProcess(handle Handle, exitcode uint32) (err error)
@@ -232,7 +199,10 @@ func NewCallback(fn interface{}) uintptr
 //sys	RegQueryInfoKey(key Handle, class *uint16, classLen *uint32, reserved *uint32, subkeysLen *uint32, maxSubkeyLen *uint32, maxClassLen *uint32, valuesLen *uint32, maxValueNameLen *uint32, maxValueLen *uint32, saLen *uint32, lastWriteTime *Filetime) (regerrno error) = advapi32.RegQueryInfoKeyW
 //sys	RegEnumKeyEx(key Handle, index uint32, name *uint16, nameLen *uint32, reserved *uint32, class *uint16, classLen *uint32, lastWriteTime *Filetime) (regerrno error) = advapi32.RegEnumKeyExW
 //sys	RegQueryValueEx(key Handle, name *uint16, reserved *uint32, valtype *uint32, buf *byte, buflen *uint32) (regerrno error) = advapi32.RegQueryValueExW
-//sys	getCurrentProcessId() (pid uint32) = kernel32.getCurrentProcessId
+//sys	getCurrentProcessId() (pid uint32) = kernel32.GetCurrentProcessId
+//sys	GetConsoleMode(console Handle, mode *uint32) (err error) = kernel32.GetConsoleMode
+//sys	WriteConsole(console Handle, buf *uint16, towrite uint32, written *uint32, reserved *byte) (err error) = kernel32.WriteConsoleW
+//sys	ReadConsole(console Handle, buf *uint16, toread uint32, read *uint32, inputControl *byte) (err error) = kernel32.ReadConsoleW
 
 // syscall interface implementation for other packages
 
@@ -249,7 +219,7 @@ func Open(path string, mode int, perm uint32) (fd Handle, err error) {
 	if len(path) == 0 {
 		return InvalidHandle, ERROR_FILE_NOT_FOUND
 	}
-	pathp, err := utf16PtrFromString(path)
+	pathp, err := UTF16PtrFromString(path)
 	if err != nil {
 		return InvalidHandle, err
 	}
@@ -301,10 +271,16 @@ func Read(fd Handle, p []byte) (n int, err error) {
 		}
 		return 0, e
 	}
+	if raceenabled {
+		raceAcquire(unsafe.Pointer(&ioSync))
+	}
 	return int(done), nil
 }
 
 func Write(fd Handle, p []byte) (n int, err error) {
+	if raceenabled {
+		raceReleaseMerge(unsafe.Pointer(&ioSync))
+	}
 	var done uint32
 	e := WriteFile(fd, p, &done, nil)
 	if e != nil {
@@ -312,6 +288,8 @@ func Write(fd Handle, p []byte) (n int, err error) {
 	}
 	return int(done), nil
 }
+
+var ioSync int64
 
 func Seek(fd Handle, offset int64, whence int) (newoffset int64, err error) {
 	var w uint32
@@ -365,7 +343,7 @@ func Getwd() (wd string, err error) {
 }
 
 func Chdir(path string) (err error) {
-	pathp, err := utf16PtrFromString(path)
+	pathp, err := UTF16PtrFromString(path)
 	if err != nil {
 		return err
 	}
@@ -373,7 +351,7 @@ func Chdir(path string) (err error) {
 }
 
 func Mkdir(path string, mode uint32) (err error) {
-	pathp, err := utf16PtrFromString(path)
+	pathp, err := UTF16PtrFromString(path)
 	if err != nil {
 		return err
 	}
@@ -381,7 +359,7 @@ func Mkdir(path string, mode uint32) (err error) {
 }
 
 func Rmdir(path string) (err error) {
-	pathp, err := utf16PtrFromString(path)
+	pathp, err := UTF16PtrFromString(path)
 	if err != nil {
 		return err
 	}
@@ -389,7 +367,7 @@ func Rmdir(path string) (err error) {
 }
 
 func Unlink(path string) (err error) {
-	pathp, err := utf16PtrFromString(path)
+	pathp, err := UTF16PtrFromString(path)
 	if err != nil {
 		return err
 	}
@@ -397,11 +375,11 @@ func Unlink(path string) (err error) {
 }
 
 func Rename(oldpath, newpath string) (err error) {
-	from, err := utf16PtrFromString(oldpath)
+	from, err := UTF16PtrFromString(oldpath)
 	if err != nil {
 		return err
 	}
-	to, err := utf16PtrFromString(newpath)
+	to, err := UTF16PtrFromString(newpath)
 	if err != nil {
 		return err
 	}
@@ -460,7 +438,7 @@ func Utimes(path string, tv []Timeval) (err error) {
 	if len(tv) != 2 {
 		return EINVAL
 	}
-	pathp, e := utf16PtrFromString(path)
+	pathp, e := UTF16PtrFromString(path)
 	if e != nil {
 		return e
 	}
@@ -476,6 +454,26 @@ func Utimes(path string, tv []Timeval) (err error) {
 	return SetFileTime(h, nil, &a, &w)
 }
 
+func UtimesNano(path string, ts []Timespec) (err error) {
+	if len(ts) != 2 {
+		return EINVAL
+	}
+	pathp, e := UTF16PtrFromString(path)
+	if e != nil {
+		return e
+	}
+	h, e := CreateFile(pathp,
+		FILE_WRITE_ATTRIBUTES, FILE_SHARE_WRITE, nil,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+	if e != nil {
+		return e
+	}
+	defer Close(h)
+	a := NsecToFiletime(TimespecToNsec(ts[0]))
+	w := NsecToFiletime(TimespecToNsec(ts[1]))
+	return SetFileTime(h, nil, &a, &w)
+}
+
 func Fsync(fd Handle) (err error) {
 	return FlushFileBuffers(fd)
 }
@@ -484,7 +482,7 @@ func Chmod(path string, mode uint32) (err error) {
 	if mode == 0 {
 		return EINVAL
 	}
-	p, e := utf16PtrFromString(path)
+	p, e := UTF16PtrFromString(path)
 	if e != nil {
 		return e
 	}
@@ -500,32 +498,41 @@ func Chmod(path string, mode uint32) (err error) {
 	return SetFileAttributes(p, attrs)
 }
 
+func LoadCancelIoEx() error {
+	return procCancelIoEx.Find()
+}
+
 // net api calls
 
+const socket_error = uintptr(^uint32(0))
+
 //sys	WSAStartup(verreq uint32, data *WSAData) (sockerr error) = ws2_32.WSAStartup
-//sys	WSACleanup() (err error) [failretval==-1] = ws2_32.WSACleanup
-//sys	WSAIoctl(s Handle, iocc uint32, inbuf *byte, cbif uint32, outbuf *byte, cbob uint32, cbbr *uint32, overlapped *Overlapped, completionRoutine uintptr) (err error) [failretval==-1] = ws2_32.WSAIoctl
+//sys	WSACleanup() (err error) [failretval==socket_error] = ws2_32.WSACleanup
+//sys	WSAIoctl(s Handle, iocc uint32, inbuf *byte, cbif uint32, outbuf *byte, cbob uint32, cbbr *uint32, overlapped *Overlapped, completionRoutine uintptr) (err error) [failretval==socket_error] = ws2_32.WSAIoctl
 //sys	socket(af int32, typ int32, protocol int32) (handle Handle, err error) [failretval==InvalidHandle] = ws2_32.socket
-//sys	Setsockopt(s Handle, level int32, optname int32, optval *byte, optlen int32) (err error) [failretval==-1] = ws2_32.setsockopt
-//sys	bind(s Handle, name uintptr, namelen int32) (err error) [failretval==-1] = ws2_32.bind
-//sys	connect(s Handle, name uintptr, namelen int32) (err error) [failretval==-1] = ws2_32.connect
-//sys	getsockname(s Handle, rsa *RawSockaddrAny, addrlen *int32) (err error) [failretval==-1] = ws2_32.getsockname
-//sys	getpeername(s Handle, rsa *RawSockaddrAny, addrlen *int32) (err error) [failretval==-1] = ws2_32.getpeername
-//sys	listen(s Handle, backlog int32) (err error) [failretval==-1] = ws2_32.listen
-//sys	shutdown(s Handle, how int32) (err error) [failretval==-1] = ws2_32.shutdown
-//sys	Closesocket(s Handle) (err error) [failretval==-1] = ws2_32.closesocket
+//sys	Setsockopt(s Handle, level int32, optname int32, optval *byte, optlen int32) (err error) [failretval==socket_error] = ws2_32.setsockopt
+//sys	Getsockopt(s Handle, level int32, optname int32, optval *byte, optlen *int32) (err error) [failretval==socket_error] = ws2_32.getsockopt
+//sys	bind(s Handle, name uintptr, namelen int32) (err error) [failretval==socket_error] = ws2_32.bind
+//sys	connect(s Handle, name uintptr, namelen int32) (err error) [failretval==socket_error] = ws2_32.connect
+//sys	getsockname(s Handle, rsa *RawSockaddrAny, addrlen *int32) (err error) [failretval==socket_error] = ws2_32.getsockname
+//sys	getpeername(s Handle, rsa *RawSockaddrAny, addrlen *int32) (err error) [failretval==socket_error] = ws2_32.getpeername
+//sys	listen(s Handle, backlog int32) (err error) [failretval==socket_error] = ws2_32.listen
+//sys	shutdown(s Handle, how int32) (err error) [failretval==socket_error] = ws2_32.shutdown
+//sys	Closesocket(s Handle) (err error) [failretval==socket_error] = ws2_32.closesocket
 //sys	AcceptEx(ls Handle, as Handle, buf *byte, rxdatalen uint32, laddrlen uint32, raddrlen uint32, recvd *uint32, overlapped *Overlapped) (err error) = mswsock.AcceptEx
 //sys	GetAcceptExSockaddrs(buf *byte, rxdatalen uint32, laddrlen uint32, raddrlen uint32, lrsa **RawSockaddrAny, lrsalen *int32, rrsa **RawSockaddrAny, rrsalen *int32) = mswsock.GetAcceptExSockaddrs
-//sys	WSARecv(s Handle, bufs *WSABuf, bufcnt uint32, recvd *uint32, flags *uint32, overlapped *Overlapped, croutine *byte) (err error) [failretval==-1] = ws2_32.WSARecv
-//sys	WSASend(s Handle, bufs *WSABuf, bufcnt uint32, sent *uint32, flags uint32, overlapped *Overlapped, croutine *byte) (err error) [failretval==-1] = ws2_32.WSASend
-//sys	WSARecvFrom(s Handle, bufs *WSABuf, bufcnt uint32, recvd *uint32, flags *uint32,  from *RawSockaddrAny, fromlen *int32, overlapped *Overlapped, croutine *byte) (err error) [failretval==-1] = ws2_32.WSARecvFrom
-//sys	WSASendTo(s Handle, bufs *WSABuf, bufcnt uint32, sent *uint32, flags uint32, to *RawSockaddrAny, tolen int32,  overlapped *Overlapped, croutine *byte) (err error) [failretval==-1] = ws2_32.WSASendTo
+//sys	WSARecv(s Handle, bufs *WSABuf, bufcnt uint32, recvd *uint32, flags *uint32, overlapped *Overlapped, croutine *byte) (err error) [failretval==socket_error] = ws2_32.WSARecv
+//sys	WSASend(s Handle, bufs *WSABuf, bufcnt uint32, sent *uint32, flags uint32, overlapped *Overlapped, croutine *byte) (err error) [failretval==socket_error] = ws2_32.WSASend
+//sys	WSARecvFrom(s Handle, bufs *WSABuf, bufcnt uint32, recvd *uint32, flags *uint32,  from *RawSockaddrAny, fromlen *int32, overlapped *Overlapped, croutine *byte) (err error) [failretval==socket_error] = ws2_32.WSARecvFrom
+//sys	WSASendTo(s Handle, bufs *WSABuf, bufcnt uint32, sent *uint32, flags uint32, to *RawSockaddrAny, tolen int32,  overlapped *Overlapped, croutine *byte) (err error) [failretval==socket_error] = ws2_32.WSASendTo
 //sys	GetHostByName(name string) (h *Hostent, err error) [failretval==nil] = ws2_32.gethostbyname
 //sys	GetServByName(name string, proto string) (s *Servent, err error) [failretval==nil] = ws2_32.getservbyname
 //sys	Ntohs(netshort uint16) (u uint16) = ws2_32.ntohs
 //sys	GetProtoByName(name string) (p *Protoent, err error) [failretval==nil] = ws2_32.getprotobyname
 //sys	DnsQuery(name string, qtype uint16, options uint32, extra *byte, qrs **DNSRecord, pr *byte) (status error) = dnsapi.DnsQuery_W
 //sys	DnsRecordListFree(rl *DNSRecord, freetype uint32) = dnsapi.DnsRecordListFree
+//sys	GetAddrInfoW(nodename *uint16, servicename *uint16, hints *AddrinfoW, result **AddrinfoW) (sockerr error) = ws2_32.GetAddrInfoW
+//sys	FreeAddrInfoW(addrinfo *AddrinfoW) = ws2_32.FreeAddrInfoW
 //sys	GetIfEntry(pIfRow *MibIfRow) (errcode error) = iphlpapi.GetIfEntry
 //sys	GetAdaptersInfo(ai *IpAdapterInfo, ol *uint32) (errcode error) = iphlpapi.GetAdaptersInfo
 
@@ -538,6 +545,14 @@ type RawSockaddrInet4 struct {
 	Port   uint16
 	Addr   [4]byte /* in_addr */
 	Zero   [8]uint8
+}
+
+type RawSockaddrInet6 struct {
+	Family   uint16
+	Port     uint16
+	Flowinfo uint32
+	Addr     [16]byte /* in6_addr */
+	Scope_id uint32
 }
 
 type RawSockaddr struct {
@@ -578,11 +593,22 @@ type SockaddrInet6 struct {
 	Port   int
 	ZoneId uint32
 	Addr   [16]byte
+	raw    RawSockaddrInet6
 }
 
 func (sa *SockaddrInet6) sockaddr() (uintptr, int32, error) {
-	// TODO(brainman): implement SockaddrInet6.sockaddr()
-	return 0, 0, EWINDOWS
+	if sa.Port < 0 || sa.Port > 0xFFFF {
+		return 0, 0, EINVAL
+	}
+	sa.raw.Family = AF_INET6
+	p := (*[2]byte)(unsafe.Pointer(&sa.raw.Port))
+	p[0] = byte(sa.Port >> 8)
+	p[1] = byte(sa.Port)
+	sa.raw.Scope_id = sa.ZoneId
+	for i := 0; i < len(sa.Addr); i++ {
+		sa.raw.Addr[i] = sa.Addr[i]
+	}
+	return uintptr(unsafe.Pointer(&sa.raw)), int32(unsafe.Sizeof(sa.raw)), nil
 }
 
 type SockaddrUnix struct {
@@ -610,7 +636,15 @@ func (rsa *RawSockaddrAny) Sockaddr() (Sockaddr, error) {
 		return sa, nil
 
 	case AF_INET6:
-		return nil, EWINDOWS
+		pp := (*RawSockaddrInet6)(unsafe.Pointer(rsa))
+		sa := new(SockaddrInet6)
+		p := (*[2]byte)(unsafe.Pointer(&pp.Port))
+		sa.Port = int(p[0])<<8 + int(p[1])
+		sa.ZoneId = pp.Scope_id
+		for i := 0; i < len(sa.Addr); i++ {
+			sa.Addr[i] = pp.Addr[i]
+		}
+		return sa, nil
 	}
 	return nil, EAFNOSUPPORT
 }
@@ -677,6 +711,60 @@ func WSASendto(s Handle, bufs *WSABuf, bufcnt uint32, sent *uint32, flags uint32
 	return WSASendTo(s, bufs, bufcnt, sent, flags, (*RawSockaddrAny)(unsafe.Pointer(rsa)), l, overlapped, croutine)
 }
 
+func LoadGetAddrInfo() error {
+	return procGetAddrInfoW.Find()
+}
+
+var connectExFunc struct {
+	once sync.Once
+	addr uintptr
+	err  error
+}
+
+func LoadConnectEx() error {
+	connectExFunc.once.Do(func() {
+		var s Handle
+		s, connectExFunc.err = Socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+		if connectExFunc.err != nil {
+			return
+		}
+		defer CloseHandle(s)
+		var n uint32
+		connectExFunc.err = WSAIoctl(s,
+			SIO_GET_EXTENSION_FUNCTION_POINTER,
+			(*byte)(unsafe.Pointer(&WSAID_CONNECTEX)),
+			uint32(unsafe.Sizeof(WSAID_CONNECTEX)),
+			(*byte)(unsafe.Pointer(&connectExFunc.addr)),
+			uint32(unsafe.Sizeof(connectExFunc.addr)),
+			&n, nil, 0)
+	})
+	return connectExFunc.err
+}
+
+func connectEx(s Handle, name uintptr, namelen int32, sendBuf *byte, sendDataLen uint32, bytesSent *uint32, overlapped *Overlapped) (err error) {
+	r1, _, e1 := Syscall9(connectExFunc.addr, 7, uintptr(s), uintptr(name), uintptr(namelen), uintptr(unsafe.Pointer(sendBuf)), uintptr(sendDataLen), uintptr(unsafe.Pointer(bytesSent)), uintptr(unsafe.Pointer(overlapped)), 0, 0)
+	if r1 == 0 {
+		if e1 != 0 {
+			err = error(e1)
+		} else {
+			err = EINVAL
+		}
+	}
+	return
+}
+
+func ConnectEx(fd Handle, sa Sockaddr, sendBuf *byte, sendDataLen uint32, bytesSent *uint32, overlapped *Overlapped) error {
+	err := LoadConnectEx()
+	if err != nil {
+		return errorspkg.New("failed to find ConnectEx: " + err.Error())
+	}
+	ptr, n, err := sa.sockaddr()
+	if err != nil {
+		return err
+	}
+	return connectEx(fd, ptr, n, sendBuf, sendDataLen, bytesSent, overlapped)
+}
+
 // Invented structures to support what package os expects.
 type Rusage struct {
 	CreationTime Filetime
@@ -714,6 +802,14 @@ type Timespec struct {
 	Nsec int64
 }
 
+func TimespecToNsec(ts Timespec) int64 { return int64(ts.Sec)*1e9 + int64(ts.Nsec) }
+
+func NsecToTimespec(nsec int64) (ts Timespec) {
+	ts.Sec = nsec / 1e9
+	ts.Nsec = nsec % 1e9
+	return
+}
+
 // TODO(brainman): fix all needed for net
 
 func Accept(fd Handle) (nfd Handle, sa Sockaddr, err error) { return 0, nil, EWINDOWS }
@@ -723,9 +819,21 @@ func Recvfrom(fd Handle, p []byte, flags int) (n int, from Sockaddr, err error) 
 func Sendto(fd Handle, p []byte, flags int, to Sockaddr) (err error)       { return EWINDOWS }
 func SetsockoptTimeval(fd Handle, level, opt int, tv *Timeval) (err error) { return EWINDOWS }
 
+// The Linger struct is wrong but we only noticed after Go 1.
+// sysLinger is the real system call structure.
+
+// BUG(brainman): The definition of Linger is not appropriate for direct use
+// with Setsockopt and Getsockopt.
+// Use SetsockoptLinger instead.
+
 type Linger struct {
 	Onoff  int32
 	Linger int32
+}
+
+type sysLinger struct {
+	Onoff  uint16
+	Linger uint16
 }
 
 type IPMreq struct {
@@ -738,8 +846,13 @@ type IPv6Mreq struct {
 	Interface uint32
 }
 
-func GetsockoptInt(fd Handle, level, opt int) (int, error)              { return -1, EWINDOWS }
-func SetsockoptLinger(fd Handle, level, opt int, l *Linger) (err error) { return EWINDOWS }
+func GetsockoptInt(fd Handle, level, opt int) (int, error) { return -1, EWINDOWS }
+
+func SetsockoptLinger(fd Handle, level, opt int, l *Linger) (err error) {
+	sys := sysLinger{Onoff: uint16(l.Onoff), Linger: uint16(l.Linger)}
+	return Setsockopt(fd, int32(level), int32(opt), (*byte)(unsafe.Pointer(&sys)), int32(unsafe.Sizeof(sys)))
+}
+
 func SetsockoptInet4Addr(fd Handle, level, opt int, value [4]byte) (err error) {
 	return Setsockopt(fd, int32(level), int32(opt), (*byte)(unsafe.Pointer(&value[0])), 4)
 }

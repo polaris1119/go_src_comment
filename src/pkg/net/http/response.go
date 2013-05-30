@@ -46,10 +46,13 @@ type Response struct {
 	// The http Client and Transport guarantee that Body is always
 	// non-nil, even on responses without a body or responses with
 	// a zero-lengthed body.
+	//
+	// The Body is automatically dechunked if the server replied
+	// with a "chunked" Transfer-Encoding.
 	Body io.ReadCloser
 
 	// ContentLength records the length of the associated content.  The
-	// value -1 indicates that the length is unknown.  Unless RequestMethod
+	// value -1 indicates that the length is unknown.  Unless Request.Method
 	// is "HEAD", values >= 0 indicate that the given number of bytes may
 	// be read from Body.
 	ContentLength int64
@@ -107,7 +110,6 @@ func ReadResponse(r *bufio.Reader, req *Request) (resp *Response, err error) {
 	resp = new(Response)
 
 	resp.Request = req
-	resp.Request.Method = strings.ToUpper(resp.Request.Method)
 
 	// Parse the first line of the response.
 	line, err := tp.ReadLine()
@@ -179,7 +181,7 @@ func (r *Response) ProtoAtLeast(major, minor int) bool {
 //  StatusCode
 //  ProtoMajor
 //  ProtoMinor
-//  RequestMethod
+//  Request.Method
 //  TransferEncoding
 //  Trailer
 //  Body
@@ -187,11 +189,6 @@ func (r *Response) ProtoAtLeast(major, minor int) bool {
 //  Header, values for non-canonical keys will have unpredictable behavior
 //
 func (r *Response) Write(w io.Writer) error {
-
-	// RequestMethod should be upper-case
-	if r.Request != nil {
-		r.Request.Method = strings.ToUpper(r.Request.Method)
-	}
 
 	// Status line
 	text := r.Status
@@ -204,9 +201,7 @@ func (r *Response) Write(w io.Writer) error {
 	}
 	protoMajor, protoMinor := strconv.Itoa(r.ProtoMajor), strconv.Itoa(r.ProtoMinor)
 	statusCode := strconv.Itoa(r.StatusCode) + " "
-	if strings.HasPrefix(text, statusCode) {
-		text = text[len(statusCode):]
-	}
+	text = strings.TrimPrefix(text, statusCode)
 	io.WriteString(w, "HTTP/"+protoMajor+"."+protoMinor+" "+statusCode+text+"\r\n")
 
 	// Process Body,ContentLength,Close,Trailer

@@ -129,14 +129,14 @@ while(<>) {
 			push @args, "uintptr(unsafe.Pointer($name))";
 		} elsif($type eq "string" && $errvar ne "") {
 			$text .= "\tvar _p$n *byte\n";
-			$text .= "\t_p$n, $errvar = bytePtrFromString($name)\n";
+			$text .= "\t_p$n, $errvar = BytePtrFromString($name)\n";
 			$text .= "\tif $errvar != nil {\n\t\treturn\n\t}\n";
 			push @args, "uintptr(unsafe.Pointer(_p$n))";
 			$n++;
 		} elsif($type eq "string") {
 			print STDERR "$ARGV:$.: $func uses string arguments, but has no error return\n";
 			$text .= "\tvar _p$n *byte\n";
-			$text .= "\t_p$n, _ = bytePtrFromString($name)\n";
+			$text .= "\t_p$n, _ = BytePtrFromString($name)\n";
 			push @args, "uintptr(unsafe.Pointer(_p$n))";
 			$n++;
 		} elsif($type =~ /^\[\](.*)/) {
@@ -257,7 +257,7 @@ while(<>) {
 	$text .= $body;
 	
 	if ($plan9 && $ret[2] eq "e1") {
-		$text .= "\tif int(r0) == -1 {\n";
+		$text .= "\tif int32(r0) == -1 {\n";
 		$text .= "\t\terr = e1\n";
 		$text .= "\t}\n";
 	} elsif ($do_errno) {

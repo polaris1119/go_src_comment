@@ -82,8 +82,7 @@ func TestAddUint32(t *testing.T) {
 
 func TestAddInt64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before int64
@@ -107,8 +106,7 @@ func TestAddInt64(t *testing.T) {
 
 func TestAddUint64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before uint64
@@ -213,8 +211,7 @@ func TestCompareAndSwapUint32(t *testing.T) {
 
 func TestCompareAndSwapInt64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before int64
@@ -246,8 +243,7 @@ func TestCompareAndSwapInt64(t *testing.T) {
 
 func TestCompareAndSwapUint64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before uint64
@@ -381,8 +377,7 @@ func TestLoadUint32(t *testing.T) {
 
 func TestLoadInt64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before int64
@@ -405,8 +400,7 @@ func TestLoadInt64(t *testing.T) {
 
 func TestLoadUint64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before uint64
@@ -515,8 +509,7 @@ func TestStoreUint32(t *testing.T) {
 
 func TestStoreInt64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before int64
@@ -540,8 +533,7 @@ func TestStoreInt64(t *testing.T) {
 
 func TestStoreUint64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	var x struct {
 		before uint64
@@ -640,73 +632,73 @@ func init() {
 	}
 }
 
-func hammerAddInt32(uval *uint32, count int) {
-	val := (*int32)(unsafe.Pointer(uval))
+func hammerAddInt32(uaddr *uint32, count int) {
+	addr := (*int32)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
-		AddInt32(val, 1)
+		AddInt32(addr, 1)
 	}
 }
 
-func hammerAddUint32(val *uint32, count int) {
+func hammerAddUint32(addr *uint32, count int) {
 	for i := 0; i < count; i++ {
-		AddUint32(val, 1)
+		AddUint32(addr, 1)
 	}
 }
 
-func hammerAddUintptr32(uval *uint32, count int) {
+func hammerAddUintptr32(uaddr *uint32, count int) {
 	// only safe when uintptr is 32-bit.
 	// not called on 64-bit systems.
-	val := (*uintptr)(unsafe.Pointer(uval))
+	addr := (*uintptr)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
-		AddUintptr(val, 1)
+		AddUintptr(addr, 1)
 	}
 }
 
-func hammerCompareAndSwapInt32(uval *uint32, count int) {
-	val := (*int32)(unsafe.Pointer(uval))
+func hammerCompareAndSwapInt32(uaddr *uint32, count int) {
+	addr := (*int32)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapInt32(val, v, v+1) {
+			v := *addr
+			if CompareAndSwapInt32(addr, v, v+1) {
 				break
 			}
 		}
 	}
 }
 
-func hammerCompareAndSwapUint32(val *uint32, count int) {
+func hammerCompareAndSwapUint32(addr *uint32, count int) {
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapUint32(val, v, v+1) {
+			v := *addr
+			if CompareAndSwapUint32(addr, v, v+1) {
 				break
 			}
 		}
 	}
 }
 
-func hammerCompareAndSwapUintptr32(uval *uint32, count int) {
+func hammerCompareAndSwapUintptr32(uaddr *uint32, count int) {
 	// only safe when uintptr is 32-bit.
 	// not called on 64-bit systems.
-	val := (*uintptr)(unsafe.Pointer(uval))
+	addr := (*uintptr)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapUintptr(val, v, v+1) {
+			v := *addr
+			if CompareAndSwapUintptr(addr, v, v+1) {
 				break
 			}
 		}
 	}
 }
 
-func hammerCompareAndSwapPointer32(uval *uint32, count int) {
+func hammerCompareAndSwapPointer32(uaddr *uint32, count int) {
 	// only safe when uintptr is 32-bit.
 	// not called on 64-bit systems.
-	val := (*unsafe.Pointer)(unsafe.Pointer(uval))
+	addr := (*unsafe.Pointer)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapPointer(val, v, unsafe.Pointer(uintptr(v)+1)) {
+			v := *addr
+			if CompareAndSwapPointer(addr, v, unsafe.Pointer(uintptr(v)+1)) {
 				break
 			}
 		}
@@ -765,73 +757,73 @@ func init() {
 	}
 }
 
-func hammerAddInt64(uval *uint64, count int) {
-	val := (*int64)(unsafe.Pointer(uval))
+func hammerAddInt64(uaddr *uint64, count int) {
+	addr := (*int64)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
-		AddInt64(val, 1)
+		AddInt64(addr, 1)
 	}
 }
 
-func hammerAddUint64(val *uint64, count int) {
+func hammerAddUint64(addr *uint64, count int) {
 	for i := 0; i < count; i++ {
-		AddUint64(val, 1)
+		AddUint64(addr, 1)
 	}
 }
 
-func hammerAddUintptr64(uval *uint64, count int) {
+func hammerAddUintptr64(uaddr *uint64, count int) {
 	// only safe when uintptr is 64-bit.
 	// not called on 32-bit systems.
-	val := (*uintptr)(unsafe.Pointer(uval))
+	addr := (*uintptr)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
-		AddUintptr(val, 1)
+		AddUintptr(addr, 1)
 	}
 }
 
-func hammerCompareAndSwapInt64(uval *uint64, count int) {
-	val := (*int64)(unsafe.Pointer(uval))
+func hammerCompareAndSwapInt64(uaddr *uint64, count int) {
+	addr := (*int64)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapInt64(val, v, v+1) {
+			v := *addr
+			if CompareAndSwapInt64(addr, v, v+1) {
 				break
 			}
 		}
 	}
 }
 
-func hammerCompareAndSwapUint64(val *uint64, count int) {
+func hammerCompareAndSwapUint64(addr *uint64, count int) {
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapUint64(val, v, v+1) {
+			v := *addr
+			if CompareAndSwapUint64(addr, v, v+1) {
 				break
 			}
 		}
 	}
 }
 
-func hammerCompareAndSwapUintptr64(uval *uint64, count int) {
+func hammerCompareAndSwapUintptr64(uaddr *uint64, count int) {
 	// only safe when uintptr is 64-bit.
 	// not called on 32-bit systems.
-	val := (*uintptr)(unsafe.Pointer(uval))
+	addr := (*uintptr)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapUintptr(val, v, v+1) {
+			v := *addr
+			if CompareAndSwapUintptr(addr, v, v+1) {
 				break
 			}
 		}
 	}
 }
 
-func hammerCompareAndSwapPointer64(uval *uint64, count int) {
+func hammerCompareAndSwapPointer64(uaddr *uint64, count int) {
 	// only safe when uintptr is 64-bit.
 	// not called on 32-bit systems.
-	val := (*unsafe.Pointer)(unsafe.Pointer(uval))
+	addr := (*unsafe.Pointer)(unsafe.Pointer(uaddr))
 	for i := 0; i < count; i++ {
 		for {
-			v := *val
-			if CompareAndSwapPointer(val, v, unsafe.Pointer(uintptr(v)+1)) {
+			v := *addr
+			if CompareAndSwapPointer(addr, v, unsafe.Pointer(uintptr(v)+1)) {
 				break
 			}
 		}
@@ -840,8 +832,7 @@ func hammerCompareAndSwapPointer64(uval *uint64, count int) {
 
 func TestHammer64(t *testing.T) {
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	const p = 4
 	n := 100000
@@ -871,9 +862,9 @@ func TestHammer64(t *testing.T) {
 	}
 }
 
-func hammerStoreLoadInt32(t *testing.T, valp unsafe.Pointer) {
-	val := (*int32)(valp)
-	v := LoadInt32(val)
+func hammerStoreLoadInt32(t *testing.T, paddr unsafe.Pointer) {
+	addr := (*int32)(paddr)
+	v := LoadInt32(addr)
 	vlo := v & ((1 << 16) - 1)
 	vhi := v >> 16
 	if vlo != vhi {
@@ -883,12 +874,12 @@ func hammerStoreLoadInt32(t *testing.T, valp unsafe.Pointer) {
 	if vlo == 1e4 {
 		new = 0
 	}
-	StoreInt32(val, new)
+	StoreInt32(addr, new)
 }
 
-func hammerStoreLoadUint32(t *testing.T, valp unsafe.Pointer) {
-	val := (*uint32)(valp)
-	v := LoadUint32(val)
+func hammerStoreLoadUint32(t *testing.T, paddr unsafe.Pointer) {
+	addr := (*uint32)(paddr)
+	v := LoadUint32(addr)
 	vlo := v & ((1 << 16) - 1)
 	vhi := v >> 16
 	if vlo != vhi {
@@ -898,38 +889,38 @@ func hammerStoreLoadUint32(t *testing.T, valp unsafe.Pointer) {
 	if vlo == 1e4 {
 		new = 0
 	}
-	StoreUint32(val, new)
+	StoreUint32(addr, new)
 }
 
-func hammerStoreLoadInt64(t *testing.T, valp unsafe.Pointer) {
-	val := (*int64)(valp)
-	v := LoadInt64(val)
+func hammerStoreLoadInt64(t *testing.T, paddr unsafe.Pointer) {
+	addr := (*int64)(paddr)
+	v := LoadInt64(addr)
 	vlo := v & ((1 << 32) - 1)
 	vhi := v >> 32
 	if vlo != vhi {
 		t.Fatalf("Int64: %#x != %#x", vlo, vhi)
 	}
 	new := v + 1 + 1<<32
-	StoreInt64(val, new)
+	StoreInt64(addr, new)
 }
 
-func hammerStoreLoadUint64(t *testing.T, valp unsafe.Pointer) {
-	val := (*uint64)(valp)
-	v := LoadUint64(val)
+func hammerStoreLoadUint64(t *testing.T, paddr unsafe.Pointer) {
+	addr := (*uint64)(paddr)
+	v := LoadUint64(addr)
 	vlo := v & ((1 << 32) - 1)
 	vhi := v >> 32
 	if vlo != vhi {
 		t.Fatalf("Uint64: %#x != %#x", vlo, vhi)
 	}
 	new := v + 1 + 1<<32
-	StoreUint64(val, new)
+	StoreUint64(addr, new)
 }
 
-func hammerStoreLoadUintptr(t *testing.T, valp unsafe.Pointer) {
-	val := (*uintptr)(valp)
+func hammerStoreLoadUintptr(t *testing.T, paddr unsafe.Pointer) {
+	addr := (*uintptr)(paddr)
 	var test64 uint64 = 1 << 50
 	arch32 := uintptr(test64) == 0
-	v := LoadUintptr(val)
+	v := LoadUintptr(addr)
 	new := v
 	if arch32 {
 		vlo := v & ((1 << 16) - 1)
@@ -950,14 +941,14 @@ func hammerStoreLoadUintptr(t *testing.T, valp unsafe.Pointer) {
 		inc := uint64(1 + 1<<32)
 		new = v + uintptr(inc)
 	}
-	StoreUintptr(val, new)
+	StoreUintptr(addr, new)
 }
 
-func hammerStoreLoadPointer(t *testing.T, valp unsafe.Pointer) {
-	val := (*unsafe.Pointer)(valp)
+func hammerStoreLoadPointer(t *testing.T, paddr unsafe.Pointer) {
+	addr := (*unsafe.Pointer)(paddr)
 	var test64 uint64 = 1 << 50
 	arch32 := uintptr(test64) == 0
-	v := uintptr(LoadPointer(val))
+	v := uintptr(LoadPointer(addr))
 	new := v
 	if arch32 {
 		vlo := v & ((1 << 16) - 1)
@@ -978,7 +969,7 @@ func hammerStoreLoadPointer(t *testing.T, valp unsafe.Pointer) {
 		inc := uint64(1 + 1<<32)
 		new = v + uintptr(inc)
 	}
-	StorePointer(val, unsafe.Pointer(new))
+	StorePointer(addr, unsafe.Pointer(new))
 }
 
 func TestHammerStoreLoad(t *testing.T) {
@@ -1013,8 +1004,7 @@ func TestHammerStoreLoad(t *testing.T) {
 
 func TestStoreLoadSeqCst32(t *testing.T) {
 	if runtime.NumCPU() == 1 {
-		t.Logf("Skipping test on %v processor machine", runtime.NumCPU())
-		return
+		t.Skipf("Skipping test on %v processor machine", runtime.NumCPU())
 	}
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
 	N := int32(1e3)
@@ -1054,12 +1044,10 @@ func TestStoreLoadSeqCst32(t *testing.T) {
 
 func TestStoreLoadSeqCst64(t *testing.T) {
 	if runtime.NumCPU() == 1 {
-		t.Logf("Skipping test on %v processor machine", runtime.NumCPU())
-		return
+		t.Skipf("Skipping test on %v processor machine", runtime.NumCPU())
 	}
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
 	N := int64(1e3)
@@ -1099,8 +1087,7 @@ func TestStoreLoadSeqCst64(t *testing.T) {
 
 func TestStoreLoadRelAcq32(t *testing.T) {
 	if runtime.NumCPU() == 1 {
-		t.Logf("Skipping test on %v processor machine", runtime.NumCPU())
-		return
+		t.Skipf("Skipping test on %v processor machine", runtime.NumCPU())
 	}
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
 	N := int32(1e3)
@@ -1132,7 +1119,7 @@ func TestStoreLoadRelAcq32(t *testing.T) {
 					d1 := X.data1
 					d2 := X.data2
 					if d1 != i || d2 != float32(i) {
-						t.Fatalf("incorrect data: %d/%d (%d)", d1, d2, i)
+						t.Fatalf("incorrect data: %d/%g (%d)", d1, d2, i)
 					}
 				}
 			}
@@ -1145,12 +1132,10 @@ func TestStoreLoadRelAcq32(t *testing.T) {
 
 func TestStoreLoadRelAcq64(t *testing.T) {
 	if runtime.NumCPU() == 1 {
-		t.Logf("Skipping test on %v processor machine", runtime.NumCPU())
-		return
+		t.Skipf("Skipping test on %v processor machine", runtime.NumCPU())
 	}
 	if test64err != nil {
-		t.Logf("Skipping 64-bit tests: %v", test64err)
-		return
+		t.Skipf("Skipping 64-bit tests: %v", test64err)
 	}
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
 	N := int64(1e3)
@@ -1182,7 +1167,7 @@ func TestStoreLoadRelAcq64(t *testing.T) {
 					d1 := X.data1
 					d2 := X.data2
 					if d1 != i || d2 != float64(i) {
-						t.Fatalf("incorrect data: %d/%d (%d)", d1, d2, i)
+						t.Fatalf("incorrect data: %d/%g (%d)", d1, d2, i)
 					}
 				}
 			}
@@ -1191,4 +1176,30 @@ func TestStoreLoadRelAcq64(t *testing.T) {
 	}
 	<-c
 	<-c
+}
+
+func shouldPanic(t *testing.T, name string, f func()) {
+	defer func() {
+		if recover() == nil {
+			t.Errorf("%s did not panic", name)
+		}
+	}()
+	f()
+}
+
+func TestUnaligned64(t *testing.T) {
+	// Unaligned 64-bit atomics on 32-bit systems are
+	// a continual source of pain. Test that on 32-bit systems they crash
+	// instead of failing silently.
+	if unsafe.Sizeof(int(0)) != 4 {
+		t.Skip("test only runs on 32-bit systems")
+	}
+
+	x := make([]uint32, 4)
+	p := (*uint64)(unsafe.Pointer(&x[1])) // misaligned
+
+	shouldPanic(t, "LoadUint64", func() { LoadUint64(p) })
+	shouldPanic(t, "StoreUint64", func() { StoreUint64(p, 1) })
+	shouldPanic(t, "CompareAndSwapUint64", func() { CompareAndSwapUint64(p, 1, 2) })
+	shouldPanic(t, "AddUint64", func() { AddUint64(p, 3) })
 }

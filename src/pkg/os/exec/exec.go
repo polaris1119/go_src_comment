@@ -37,7 +37,7 @@ type Cmd struct {
 
 	// Args holds command line arguments, including the command as Args[0].
 	// If the Args field is empty or nil, Run uses {Path}.
-	// 
+	//
 	// In typical use, both Path and Args are set by calling Command.
 	Args []string
 
@@ -235,6 +235,8 @@ func (c *Cmd) Run() error {
 // Start starts the specified command but does not wait for it to complete.
 func (c *Cmd) Start() error {
 	if c.err != nil {
+		c.closeDescriptors(c.closeAfterStart)
+		c.closeDescriptors(c.closeAfterWait)
 		return c.err
 	}
 	if c.Process != nil {

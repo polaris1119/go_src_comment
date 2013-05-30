@@ -40,7 +40,27 @@
 enum
 {
 	thechar = '6',
-	PtrSize = 8
+	PtrSize = 8,
+	IntSize = 8,
+	MaxAlign = 32,	// max data alignment
+	
+	// Loop alignment constants:
+	// want to align loop entry to LoopAlign-byte boundary,
+	// and willing to insert at most MaxLoopPad bytes of NOP to do so.
+	// We define a loop entry as the target of a backward jump.
+	//
+	// gcc uses MaxLoopPad = 10 for its 'generic x86-64' config,
+	// and it aligns all jump targets, not just backward jump targets.
+	//
+	// As of 6/1/2012, the effect of setting MaxLoopPad = 10 here
+	// is very slight but negative, so the alignment is disabled by
+	// setting MaxLoopPad = 0. The code is here for reference and
+	// for future experiments.
+	// 
+	LoopAlign = 16,
+	MaxLoopPad = 0,
+
+	FuncAlign = 16
 };
 
 #define	P		((Prog*)0)
@@ -81,9 +101,12 @@ struct	Reloc
 {
 	int32	off;
 	uchar	siz;
+	uchar	done;
 	int32	type;
 	int64	add;
+	int64	xadd;
 	Sym*	sym;
+	Sym*	xsym;
 };
 
 struct	Prog
@@ -121,11 +144,12 @@ struct	Auto
 struct	Sym
 {
 	char*	name;
+	char*	extname;	// name used in external object files
 	short	type;
 	short	version;
 	uchar	dupok;
 	uchar	reachable;
-	uchar	dynexport;
+	uchar	cgoexport;
 	uchar	special;
 	uchar	stkcheck;
 	uchar	hide;
@@ -134,18 +158,23 @@ struct	Sym
 	int32	plt;
 	int32	got;
 	int32	align;	// if non-zero, required alignment in bytes
+	int32	elfsym;
+	int32	locals;	// size of stack frame locals area
+	int32	args;	// size of stack frame incoming arguments area
 	Sym*	hash;	// in hash table
 	Sym*	allsym;	// in all symbol list
 	Sym*	next;	// in text or data list
 	Sym*	sub;	// in SSUB list
 	Sym*	outer;	// container of sub
+	Sym*	reachparent;
+	Sym*	queue;
 	vlong	value;
 	vlong	size;
 	Sym*	gotype;
 	char*	file;
-	char*	dynimpname;
 	char*	dynimplib;
 	char*	dynimpvers;
+	struct Section*	sect;
 	
 	// STEXT
 	Auto*	autom;
@@ -158,6 +187,7 @@ struct	Sym
 	Reloc*	r;
 	int32	nr;
 	int32	maxr;
+	int 	rel_ro;
 };
 struct	Optab
 {
@@ -237,6 +267,7 @@ enum
 	Zo_iw,
 	Zm_o,
 	Zm_r,
+	Zm2_r,
 	Zm_r_xm,
 	Zm_r_i_xm,
 	Zm_r_3d,
@@ -266,10 +297,11 @@ enum
 	P32		= 0x32,	/* 32-bit only */
 	Pe		= 0x66,	/* operand escape */
 	Pm		= 0x0f,	/* 2byte opcode escape */
-	Pq		= 0xff,	/* both escape */
+	Pq		= 0xff,	/* both escapes: 66 0f */
 	Pb		= 0xfe,	/* byte operands */
-	Pf2		= 0xf2,	/* xmm escape 1 */
-	Pf3		= 0xf3,	/* xmm escape 2 */
+	Pf2		= 0xf2,	/* xmm escape 1: f2 0f */
+	Pf3		= 0xf3,	/* xmm escape 2: f3 0f */
+	Pq3		= 0x67, /* xmm escape 3: 66 48 0f */
 	Pw		= 0x48,	/* Rex.w */
 	Py		= 0x80,	/* defaults to 64-bit mode */
 
@@ -294,17 +326,17 @@ enum
 EXTERN	int32	HEADR;
 EXTERN	int32	HEADTYPE;
 EXTERN	int32	INITRND;
-EXTERN	vlong	INITTEXT;
-EXTERN	vlong	INITDAT;
+EXTERN	int64	INITTEXT;
+EXTERN	int64	INITDAT;
 EXTERN	char*	INITENTRY;		/* entry point */
+EXTERN	char*	LIBINITENTRY;		/* shared library entry point */
 EXTERN	char*	pcstr;
 EXTERN	Auto*	curauto;
 EXTERN	Auto*	curhist;
 EXTERN	Prog*	curp;
 EXTERN	Sym*	cursym;
 EXTERN	Sym*	datap;
-EXTERN	vlong	elfdatsize;
-EXTERN	char	debug[128];
+EXTERN	int	debug[128];
 EXTERN	char	literal[32];
 EXTERN	Sym*	textp;
 EXTERN	Sym*	etextp;

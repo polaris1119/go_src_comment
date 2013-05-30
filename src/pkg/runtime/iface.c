@@ -5,6 +5,7 @@
 #include "runtime.h"
 #include "arch_GOARCH.h"
 #include "type.h"
+#include "typekind.h"
 #include "malloc.h"
 
 void
@@ -18,19 +19,6 @@ runtime·printeface(Eface e)
 {
 	runtime·printf("(%p,%p)", e.type, e.data);
 }
-
-/*
- * layout of Itab known to compilers
- */
-struct Itab
-{
-	InterfaceType*	inter;
-	Type*	type;
-	Itab*	link;
-	int32	bad;
-	int32	unused;
-	void	(*fun[])(void);
-};
 
 static	Itab*	hash[1009];
 static	Lock	ifacelock;
@@ -182,19 +170,37 @@ copyout(Type *t, void **src, void *dst)
 		alg->copy(size, dst, *src);
 }
 
-// func convT2I(typ *byte, typ2 *byte, elem any) (ret any)
 #pragma textflag 7
 void
-runtime·convT2I(Type *t, InterfaceType *inter, ...)
+runtime·typ2Itab(Type *t, InterfaceType *inter, Itab **cache, Itab *ret)
+{
+	Itab *tab;
+
+	tab = itab(inter, t, 0);
+	runtime·atomicstorep(cache, tab);
+	ret = tab;
+	FLUSH(&ret);
+}
+
+// func convT2I(typ *byte, typ2 *byte, cache **byte, elem any) (ret any)
+#pragma textflag 7
+void
+runtime·convT2I(Type *t, InterfaceType *inter, Itab **cache, ...)
 {
 	byte *elem;
 	Iface *ret;
+	Itab *tab;
 	int32 wid;
 
-	elem = (byte*)(&inter+1);
+	elem = (byte*)(&cache+1);
 	wid = t->size;
 	ret = (Iface*)(elem + ROUND(wid, Structrnd));
-	ret->tab = itab(inter, t, 0);
+	tab = runtime·atomicloadp(cache);
+	if(!tab) {
+		tab = itab(inter, t, 0);
+		runtime·atomicstorep(cache, tab);
+	}
+	ret->tab = tab;
 	copyin(t, elem, &ret->data);
 }
 
@@ -272,6 +278,13 @@ runtime·assertI2T2(Type *t, Iface i, ...)
 	copyout(t, &i.data, ret);
 }
 
+void
+runtime·assertI2TOK(Type *t, Iface i, bool ok)
+{
+	ok = i.tab!=nil && i.tab->type==t;
+	FLUSH(&ok);
+}
+
 static void assertE2Tret(Type *t, Eface e, byte *ret);
 
 // func ifaceE2T(typ *byte, iface any) (ret any)
@@ -326,6 +339,13 @@ runtime·assertE2T2(Type *t, Eface e, ...)
 
 	*ok = true;
 	copyout(t, &e.data, ret);
+}
+
+void
+runtime·assertE2TOK(Type *t, Eface e, bool ok)
+{
+	ok = t==e.type;
+	FLUSH(&ok);
 }
 
 // func convI2E(elem any) (ret any)
@@ -526,10 +546,10 @@ runtime·assertE2E2(InterfaceType* inter, Eface e, Eface ret, bool ok)
 }
 
 static uintptr
-ifacehash1(void *data, Type *t)
+ifacehash1(void *data, Type *t, uintptr h)
 {
 	Alg *alg;
-	uintptr size, h;
+	uintptr size;
 	Eface err;
 
 	if(t == nil)
@@ -543,7 +563,6 @@ ifacehash1(void *data, Type *t)
 		runtime·newErrorString(runtime·catstring(runtime·gostringnocopy((byte*)"hash of unhashable type "), *t->string), &err);
 		runtime·panic(err);
 	}
-	h = 0;
 	if(size <= sizeof(data))
 		alg->hash(&h, size, &data);
 	else
@@ -552,17 +571,17 @@ ifacehash1(void *data, Type *t)
 }
 
 uintptr
-runtime·ifacehash(Iface a)
+runtime·ifacehash(Iface a, uintptr h)
 {
 	if(a.tab == nil)
-		return 0;
-	return ifacehash1(a.data, a.tab->type);
+		return h;
+	return ifacehash1(a.data, a.tab->type, h);
 }
 
 uintptr
-runtime·efacehash(Eface a)
+runtime·efacehash(Eface a, uintptr h)
 {
-	return ifacehash1(a.data, a.type);
+	return ifacehash1(a.data, a.type, h);
 }
 
 static bool
@@ -666,39 +685,54 @@ reflect·unsafe_Typeof(Eface e, Eface ret)
 }
 
 void
-reflect·unsafe_New(Eface typ, void *ret)
+reflect·unsafe_New(Type *t, void *ret)
 {
-	Type *t;
+	uint32 flag;
 
-	// Reflect library has reinterpreted typ
-	// as its own kind of type structure.
-	// We know that the pointer to the original
-	// type structure sits before the data pointer.
-	t = (Type*)((Eface*)typ.data-1);
+	flag = t->kind&KindNoPointers ? FlagNoPointers : 0;
+	ret = runtime·mallocgc(t->size, flag, 1, 1);
 
-	if(t->kind&KindNoPointers)
-		ret = runtime·mallocgc(t->size, FlagNoPointers, 1, 1);
-	else
-		ret = runtime·mal(t->size);
+	if(UseSpanType && !flag) {
+		if(false) {
+			runtime·printf("unsafe_New %S: %p\n", *t->string, ret);
+		}
+		runtime·settype(ret, (uintptr)t | TypeInfo_SingleObject);
+	}
+
 	FLUSH(&ret);
 }
 
 void
-reflect·unsafe_NewArray(Eface typ, uint32 n, void *ret)
+reflect·unsafe_NewArray(Type *t, intgo n, void *ret)
 {
 	uint64 size;
-	Type *t;
-
-	// Reflect library has reinterpreted typ
-	// as its own kind of type structure.
-	// We know that the pointer to the original
-	// type structure sits before the data pointer.
-	t = (Type*)((Eface*)typ.data-1);
 
 	size = n*t->size;
-	if(t->kind&KindNoPointers)
+	if(size == 0)
+		ret = (byte*)&runtime·zerobase;
+	else if(t->kind&KindNoPointers)
 		ret = runtime·mallocgc(size, FlagNoPointers, 1, 1);
-	else
-		ret = runtime·mal(size);
+	else {
+		ret = runtime·mallocgc(size, 0, 1, 1);
+
+		if(UseSpanType) {
+			if(false) {
+				runtime·printf("unsafe_NewArray [%D]%S: %p\n", (int64)n, *t->string, ret);
+			}
+			runtime·settype(ret, (uintptr)t | TypeInfo_Array);
+		}
+	}
+
+	FLUSH(&ret);
+}
+
+void
+reflect·typelinks(Slice ret)
+{
+	extern Type *typelink[], *etypelink[];
+	static int32 first = 1;
+	ret.array = (byte*)typelink;
+	ret.len = etypelink - typelink;
+	ret.cap = ret.len;
 	FLUSH(&ret);
 }

@@ -20,7 +20,6 @@ type PathTest struct {
 
 var cleantests = []PathTest{
 	// Already clean
-	{"", "."},
 	{"abc", "abc"},
 	{"abc/def", "abc/def"},
 	{"a/b/c", "a/b/c"},
@@ -30,6 +29,9 @@ var cleantests = []PathTest{
 	{"../../abc", "../../abc"},
 	{"/abc", "/abc"},
 	{"/", "/"},
+
+	// Empty is current dir
+	{"", "."},
 
 	// Remove trailing slash
 	{"abc/", "abc"},
@@ -61,6 +63,7 @@ var cleantests = []PathTest{
 	{"abc/def/../../..", ".."},
 	{"/abc/def/../../..", "/"},
 	{"abc/def/../../../ghi/jkl/../../../mno", "../../mno"},
+	{"/../abc", "/abc"},
 
 	// Combinations
 	{"abc/./../def", "def"},
@@ -99,6 +102,21 @@ func TestClean(t *testing.T) {
 		if s := filepath.Clean(test.path); s != test.result {
 			t.Errorf("Clean(%q) = %q, want %q", test.path, s, test.result)
 		}
+		if s := filepath.Clean(test.result); s != test.result {
+			t.Errorf("Clean(%q) = %q, want %q", test.result, s, test.result)
+		}
+	}
+
+	if runtime.GOMAXPROCS(0) > 1 {
+		t.Log("skipping AllocsPerRun checks; GOMAXPROCS>1")
+		return
+	}
+
+	for _, test := range tests {
+		allocs := testing.AllocsPerRun(100, func() { filepath.Clean(test.result) })
+		if allocs > 0 {
+			t.Errorf("Clean(%q): %v allocs, want zero", test.result, allocs)
+		}
 	}
 }
 
@@ -135,10 +153,36 @@ var splitlisttests = []SplitListTest{
 	{string([]byte{lsep, 'a', lsep, 'b'}), []string{"", "a", "b"}},
 }
 
+var winsplitlisttests = []SplitListTest{
+	// quoted
+	{`"a"`, []string{`a`}},
+
+	// semicolon
+	{`";"`, []string{`;`}},
+	{`"a;b"`, []string{`a;b`}},
+	{`";";`, []string{`;`, ``}},
+	{`;";"`, []string{``, `;`}},
+
+	// partially quoted
+	{`a";"b`, []string{`a;b`}},
+	{`a; ""b`, []string{`a`, ` b`}},
+	{`"a;b`, []string{`a;b`}},
+	{`""a;b`, []string{`a`, `b`}},
+	{`"""a;b`, []string{`a;b`}},
+	{`""""a;b`, []string{`a`, `b`}},
+	{`a";b`, []string{`a;b`}},
+	{`a;b";c`, []string{`a`, `b;c`}},
+	{`"a";b";c`, []string{`a`, `b;c`}},
+}
+
 func TestSplitList(t *testing.T) {
-	for _, test := range splitlisttests {
+	tests := splitlisttests
+	if runtime.GOOS == "windows" {
+		tests = append(tests, winsplitlisttests...)
+	}
+	for _, test := range tests {
 		if l := filepath.SplitList(test.list); !reflect.DeepEqual(l, test.result) {
-			t.Errorf("SplitList(%q) = %s, want %s", test.list, l, test.result)
+			t.Errorf("SplitList(%#q) = %#q, want %#q", test.list, l, test.result)
 		}
 	}
 }
@@ -684,10 +728,15 @@ func TestAbs(t *testing.T) {
 	}
 	defer os.RemoveAll(root)
 
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal("getwd failed: ", err)
+	}
 	err = os.Chdir(root)
 	if err != nil {
 		t.Fatal("chdir failed: ", err)
 	}
+	defer os.Chdir(wd)
 
 	for _, dir := range absTestDirs {
 		err = os.Mkdir(dir, 0777)
@@ -871,7 +920,7 @@ func TestDriveLetterInEvalSymlinks(t *testing.T) {
 }
 
 func TestBug3486(t *testing.T) { // http://code.google.com/p/go/issues/detail?id=3486
-	root, err := filepath.EvalSymlinks(os.Getenv("GOROOT"))
+	root, err := filepath.EvalSymlinks(runtime.GOROOT())
 	if err != nil {
 		t.Fatal(err)
 	}

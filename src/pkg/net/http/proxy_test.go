@@ -25,13 +25,13 @@ var UseProxyTests = []struct {
 	{"[::2]", true}, // not a loopback address
 
 	{"barbaz.net", false},     // match as .barbaz.net
-	{"foobar.com", false},     // have a port but match 
+	{"foobar.com", false},     // have a port but match
 	{"foofoobar.com", true},   // not match as a part of foobar.com
 	{"baz.com", true},         // not match as a part of barbaz.com
 	{"localhost.net", true},   // not match as suffix of address
 	{"local.localhost", true}, // not match as prefix as address
 	{"barbarbaz.net", true},   // not match because NO_PROXY have a '.'
-	{"www.foobar.com", true},  // not match because NO_PROXY is not .foobar.com
+	{"www.foobar.com", false}, // match because NO_PROXY includes "foobar.com"
 }
 
 func TestUseProxy(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 /*
  * Pseudo-system calls
  */
+
 // The const provides a compile-time constant so clients
 // can adjust to whether there is a working Getwd and avoid
 // even linking this function into the binary.  See ../os/getwd.go.
@@ -326,6 +327,11 @@ func Getsockname(fd int) (sa Sockaddr, err error) {
 	if err = getsockname(fd, &rsa, &len); err != nil {
 		return
 	}
+	// TODO(jsing): Remove after OpenBSD 5.4 is released (see issue 3349).
+	if runtime.GOOS == "openbsd" && rsa.Addr.Family == AF_UNSPEC && rsa.Addr.Len == 0 {
+		rsa.Addr.Family = AF_UNIX
+		rsa.Addr.Len = SizeofSockaddrUnix
+	}
 	return anyToSockaddr(&rsa)
 }
 
@@ -362,10 +368,15 @@ func Socket(domain, typ, proto int) (fd int, err error) {
 	return
 }
 
-//sysnb socketpair(domain int, typ int, proto int, fd *[2]int) (err error)
+//sysnb socketpair(domain int, typ int, proto int, fd *[2]int32) (err error)
 
 func Socketpair(domain, typ, proto int) (fd [2]int, err error) {
-	err = socketpair(domain, typ, proto, &fd)
+	var fdx [2]int32
+	err = socketpair(domain, typ, proto, &fdx)
+	if err == nil {
+		fd[0] = int(fdx[0])
+		fd[1] = int(fdx[1])
+	}
 	return
 }
 
@@ -445,7 +456,9 @@ func Recvfrom(fd int, p []byte, flags int) (n int, from Sockaddr, err error) {
 	if n, err = recvfrom(fd, p, flags, &rsa, &len); err != nil {
 		return
 	}
-	from, err = anyToSockaddr(&rsa)
+	if rsa.Addr.Family != AF_UNSPEC {
+		from, err = anyToSockaddr(&rsa)
+	}
 	return
 }
 
@@ -561,16 +574,7 @@ func Sysctl(name string) (value string, err error) {
 		return "", err
 	}
 	if n == 0 {
-		// TODO(jsing): Remove after OpenBSD 5.2 release.
-		// Work around a bug that was fixed after OpenBSD 5.0.
-		// The length for kern.hostname and kern.domainname is always
-		// returned as 0 when a nil value is passed for oldp.
-		if runtime.GOOS == "openbsd" && (name == "kern.hostname" || name == "kern.domainname") {
-			// MAXHOSTNAMELEN
-			n = 256
-		} else {
-			return "", nil
-		}
+		return "", nil
 	}
 
 	// Read into buffer of that size.
@@ -609,6 +613,21 @@ func SysctlUint32(name string) (value uint32, err error) {
 func Utimes(path string, tv []Timeval) (err error) {
 	if len(tv) != 2 {
 		return EINVAL
+	}
+	return utimes(path, (*[2]Timeval)(unsafe.Pointer(&tv[0])))
+}
+
+func UtimesNano(path string, ts []Timespec) error {
+	// TODO: The BSDs can do utimensat with SYS_UTIMENSAT but it
+	// isn't supported by darwin so this uses utimes instead
+	if len(ts) != 2 {
+		return EINVAL
+	}
+	// Not as efficient as it could be because Timespec and
+	// Timeval have different types in the different OSes
+	tv := [2]Timeval{
+		NsecToTimeval(TimespecToNsec(ts[0])),
+		NsecToTimeval(TimespecToNsec(ts[1])),
 	}
 	return utimes(path, (*[2]Timeval)(unsafe.Pointer(&tv[0])))
 }

@@ -23,13 +23,28 @@ func (e ErrorString) Error() string { return string(e) }
 // NewError converts s to an ErrorString, which satisfies the Error interface.
 func NewError(s string) error { return ErrorString(s) }
 
+func (e ErrorString) Temporary() bool {
+	return e == EINTR || e == EMFILE || e.Timeout()
+}
+
+func (e ErrorString) Timeout() bool {
+	return e == EBUSY || e == ETIMEDOUT
+}
+
+// A Note is a string describing a process note.
+// It implements the os.Signal interface.
+type Note string
+
+func (n Note) Signal() {}
+
+func (n Note) String() string {
+	return string(n)
+}
+
 var (
 	Stdin  = 0
 	Stdout = 1
 	Stderr = 2
-
-	EAFNOSUPPORT = NewError("address family not supported by protocol")
-	EISDIR       = NewError("file is a directory")
 )
 
 // For testing: clients can set this flag to force
@@ -67,25 +82,10 @@ func errstr() string {
 	return cstring(buf[:])
 }
 
-func Getpagesize() int { return 4096 }
+// Implemented in assembly to import from runtime.
+func exit(int)
 
-//sys	exits(msg *byte)
-func Exits(msg *string) {
-	if msg == nil {
-		exits(nil)
-	}
-
-	exits(StringBytePtr(*msg))
-}
-
-func Exit(code int) {
-	if code == 0 {
-		Exits(nil)
-	}
-
-	msg := itoa(code)
-	Exits(&msg)
-}
+func Exit(code int) { exit(code) }
 
 func readnum(path string) (uint, error) {
 	var b [12]byte
@@ -120,12 +120,21 @@ func Getppid() (ppid int) {
 }
 
 func Read(fd int, p []byte) (n int, err error) {
-	return Pread(fd, p, -1)
+	n, err = Pread(fd, p, -1)
+	if raceenabled && err == nil {
+		raceAcquire(unsafe.Pointer(&ioSync))
+	}
+	return
 }
 
 func Write(fd int, p []byte) (n int, err error) {
+	if raceenabled {
+		raceReleaseMerge(unsafe.Pointer(&ioSync))
+	}
 	return Pwrite(fd, p, -1)
 }
+
+var ioSync int64
 
 func Getwd() (wd string, err error) {
 	fd, e := Open(".", O_RDONLY)
@@ -240,7 +249,7 @@ func Await(w *Waitmsg) (err error) {
 }
 
 func Unmount(name, old string) (err error) {
-	oldp, err := bytePtrFromString(old)
+	oldp, err := BytePtrFromString(old)
 	if err != nil {
 		return err
 	}
@@ -253,14 +262,14 @@ func Unmount(name, old string) (err error) {
 	if name == "" {
 		r0, _, e = Syscall(SYS_UNMOUNT, _zero, oldptr, 0)
 	} else {
-		namep, err := bytePtrFromString(name)
+		namep, err := BytePtrFromString(name)
 		if err != nil {
 			return err
 		}
 		r0, _, e = Syscall(SYS_UNMOUNT, uintptr(unsafe.Pointer(namep)), oldptr, 0)
 	}
 
-	if int(r0) == -1 {
+	if int32(r0) == -1 {
 		err = e
 	}
 	return
@@ -308,29 +317,12 @@ func DecodeBintime(b []byte) (nsec int64, err error) {
 	return
 }
 
-func Gettimeofday(tv *Timeval) (err error) {
-	// TODO(paulzhol): 
-	// avoid reopening a file descriptor for /dev/bintime on each call,
-	// use lower-level calls to avoid allocation.
-
-	var b [8]byte
-	var nsec int64
-
-	fd, e := Open("/dev/bintime", O_RDONLY)
+func Gettimeofday(tv *Timeval) error {
+	nsec, e := nanotime()
 	if e != nil {
 		return e
 	}
-	defer Close(fd)
-
-	if _, e = Pread(fd, b[:], 0); e != nil {
-		return e
-	}
-
-	if nsec, e = DecodeBintime(b[:]); e != nil {
-		return e
-	}
 	*tv = NsecToTimeval(nsec)
-
 	return e
 }
 
@@ -341,14 +333,6 @@ func Getuid() (uid int)   { return -1 }
 
 func Getgroups() (gids []int, err error) {
 	return make([]int, 0), nil
-}
-
-type Signal int
-
-func (s Signal) Signal() {}
-
-func (s Signal) String() string {
-	return ""
 }
 
 //sys	Dup(oldfd int, newfd int) (fd int, err error)

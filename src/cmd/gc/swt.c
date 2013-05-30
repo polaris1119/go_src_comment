@@ -117,12 +117,15 @@ exprcmp(Case *c1, Case *c2)
 	n1 = c1->node->left;
 	n2 = c2->node->left;
 
+	// sort by type (for switches on interface)
 	ct = n1->val.ctype;
-	if(ct != n2->val.ctype) {
-		// invalid program, but return a sort
-		// order so that we can give a better
-		// error later.
+	if(ct != n2->val.ctype)
 		return ct - n2->val.ctype;
+	if(!eqtype(n1->type, n2->type)) {
+		if(n1->type->vargen > n2->type->vargen)
+			return +1;
+		else
+			return -1;
 	}
 
 	// sort by constant value
@@ -259,9 +262,10 @@ casebody(Node *sw, Node *typeswvar)
 	Node *go, *br;
 	int32 lno, needvar;
 
-	lno = setlineno(sw);
 	if(sw->list == nil)
 		return;
+
+	lno = setlineno(sw);
 
 	cas = nil;	// cases
 	stat = nil;	// statements
@@ -270,7 +274,7 @@ casebody(Node *sw, Node *typeswvar)
 
 	for(l=sw->list; l; l=l->next) {
 		n = l->n;
-		lno = setlineno(n);
+		setlineno(n);
 		if(n->op != OXCASE)
 			fatal("casebody %O", n->op);
 		n->op = OCASE;
@@ -318,6 +322,10 @@ casebody(Node *sw, Node *typeswvar)
 				setlineno(last);
 				yyerror("cannot fallthrough in type switch");
 			}
+			if(l->next == nil) {
+				setlineno(last);
+				yyerror("cannot fallthrough final case in switch");
+			}
 			last->op = OFALL;
 		} else
 			stat = list(stat, br);
@@ -350,6 +358,8 @@ mkcaselist(Node *sw, int arg)
 		c = c1;
 
 		ord++;
+		if((uint16)ord != ord)
+			fatal("too many cases in switch");
 		c->ordinal = ord;
 		c->node = n;
 
@@ -378,6 +388,7 @@ mkcaselist(Node *sw, int arg)
 		case Strue:
 		case Sfalse:
 			c->type = Texprvar;
+			c->hash = typehash(n->left->type);
 			switch(consttype(n->left)) {
 			case CTFLT:
 			case CTINT:
@@ -442,6 +453,10 @@ exprbsw(Case *c0, int ncase, int arg)
 			n = c0->node;
 			lno = setlineno(n);
 
+			if(assignop(n->left->type, exprname->type, nil) == OCONVIFACE ||
+			   assignop(exprname->type, n->left->type, nil) == OCONVIFACE)
+				goto snorm;
+
 			switch(arg) {
 			case Strue:
 				a = nod(OIF, N, N);
@@ -457,6 +472,7 @@ exprbsw(Case *c0, int ncase, int arg)
 				break;
 
 			default:
+			snorm:
 				a = nod(OIF, N, N);
 				a->ntest = nod(OEQ, exprname, n->left);	// if name == val
 				typecheck(&a->ntest, Erv);
@@ -520,6 +536,8 @@ exprswitch(Node *sw)
 		exprname = temp(sw->ntest->type);
 		cas = list1(nod(OAS, exprname, sw->ntest));
 		typechecklist(cas, Etop);
+	} else {
+		exprname = nodbool(arg == Strue);
 	}
 
 	c0 = mkcaselist(sw, arg);
@@ -786,7 +804,6 @@ typeswitch(Node *sw)
 void
 walkswitch(Node *sw)
 {
-
 	/*
 	 * reorder the body into (OLIST, cases, statements)
 	 * cases have OGOTO into statements.

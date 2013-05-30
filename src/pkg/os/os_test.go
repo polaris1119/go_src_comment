@@ -6,6 +6,7 @@ package os_test
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -40,7 +41,6 @@ var sysdir = func() (sd *sysDir) {
 		sd = &sysDir{
 			Getenv("SystemRoot") + "\\system32\\drivers\\etc",
 			[]string{
-				"hosts",
 				"networks",
 				"protocol",
 				"services",
@@ -310,8 +310,7 @@ func TestReaddirnamesOneAtATime(t *testing.T) {
 
 func TestReaddirNValues(t *testing.T) {
 	if testing.Short() {
-		t.Logf("test.short; skipping")
-		return
+		t.Skip("test.short; skipping")
 	}
 	dir, err := ioutil.TempDir("", "")
 	if err != nil {
@@ -535,8 +534,10 @@ func exec(t *testing.T, dir, cmd string, args []string, expect string) {
 	var b bytes.Buffer
 	io.Copy(&b, r)
 	output := b.String()
-	// Accept /usr prefix because Solaris /bin is symlinked to /usr/bin.
-	if output != expect && output != "/usr"+expect {
+
+	fi1, _ := Stat(strings.TrimSpace(output))
+	fi2, _ := Stat(expect)
+	if !SameFile(fi1, fi2) {
 		t.Errorf("exec %q returned %q wanted %q",
 			strings.Join(append([]string{cmd}, args...), " "), output, expect)
 	}
@@ -544,15 +545,13 @@ func exec(t *testing.T, dir, cmd string, args []string, expect string) {
 }
 
 func TestStartProcess(t *testing.T) {
-	var dir, cmd, le string
+	var dir, cmd string
 	var args []string
 	if runtime.GOOS == "windows" {
-		le = "\r\n"
 		cmd = Getenv("COMSPEC")
 		dir = Getenv("SystemRoot")
 		args = []string{"/c", "cd"}
 	} else {
-		le = "\n"
 		cmd = "/bin/pwd"
 		dir = "/"
 		args = []string{}
@@ -560,9 +559,9 @@ func TestStartProcess(t *testing.T) {
 	cmddir, cmdbase := filepath.Split(cmd)
 	args = append([]string{cmdbase}, args...)
 	// Test absolute executable path.
-	exec(t, dir, cmd, args, dir+le)
+	exec(t, dir, cmd, args, dir)
 	// Test relative executable path.
-	exec(t, cmddir, cmdbase, args, filepath.Clean(cmddir)+le)
+	exec(t, cmddir, cmdbase, args, cmddir)
 }
 
 func checkMode(t *testing.T, path string, mode FileMode) {
@@ -1064,5 +1063,54 @@ func TestDevNullFile(t *testing.T) {
 	}
 	if fi.Size() != 0 {
 		t.Fatalf("wrong file size have %d want 0", fi.Size())
+	}
+}
+
+var testLargeWrite = flag.Bool("large_write", false, "run TestLargeWriteToConsole test that floods console with output")
+
+func TestLargeWriteToConsole(t *testing.T) {
+	if !*testLargeWrite {
+		t.Skip("skipping console-flooding test; enable with -large_write")
+	}
+	b := make([]byte, 32000)
+	for i := range b {
+		b[i] = '.'
+	}
+	b[len(b)-1] = '\n'
+	n, err := Stdout.Write(b)
+	if err != nil {
+		t.Fatalf("Write to os.Stdout failed: %v", err)
+	}
+	if n != len(b) {
+		t.Errorf("Write to os.Stdout should return %d; got %d", len(b), n)
+	}
+	n, err = Stderr.Write(b)
+	if err != nil {
+		t.Fatalf("Write to os.Stderr failed: %v", err)
+	}
+	if n != len(b) {
+		t.Errorf("Write to os.Stderr should return %d; got %d", len(b), n)
+	}
+}
+
+func TestStatDirModeExec(t *testing.T) {
+	const mode = 0111
+
+	path, err := ioutil.TempDir("", "go-build")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer RemoveAll(path)
+
+	if err := Chmod(path, 0777); err != nil {
+		t.Fatalf("Chmod %q 0777: %v", path, err)
+	}
+
+	dir, err := Stat(path)
+	if err != nil {
+		t.Fatalf("Stat %q (looking for mode %#o): %s", path, mode, err)
+	}
+	if dir.Mode()&mode != mode {
+		t.Errorf("Stat %q: mode %#o want %#o", path, dir.Mode()&mode, mode)
 	}
 }

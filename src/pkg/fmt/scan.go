@@ -33,8 +33,8 @@ type ScanState interface {
 	ReadRune() (r rune, size int, err error)
 	// UnreadRune causes the next call to ReadRune to return the same rune.
 	UnreadRune() error
-	// SkipSpace skips space in the input. Newlines are treated as space 
-	// unless the scan operation is Scanln, Fscanln or Sscanln, in which case 
+	// SkipSpace skips space in the input. Newlines are treated as space
+	// unless the scan operation is Scanln, Fscanln or Sscanln, in which case
 	// a newline is treated as EOF.
 	SkipSpace()
 	// Token skips space in the input if skipSpace is true, then returns the
@@ -312,8 +312,9 @@ func notSpace(r rune) bool {
 	return !isSpace(r)
 }
 
-// skipSpace provides Scan() methods the ability to skip space and newline characters 
-// in keeping with the current scanning mode set by format strings and Scan()/Scanln().
+// SkipSpace provides Scan methods the ability to skip space and newline
+// characters in keeping with the current scanning mode set by format strings
+// and Scan/Scanln.
 func (s *ss) SkipSpace() {
 	s.skipSpace(false)
 }
@@ -337,7 +338,10 @@ func (r *readRune) readByte() (b byte, err error) {
 		r.pending--
 		return
 	}
-	_, err = r.reader.Read(r.pendBuf[0:1])
+	n, err := io.ReadFull(r.reader, r.pendBuf[0:1])
+	if n != 1 {
+		return 0, err
+	}
 	return r.pendBuf[0], err
 }
 
@@ -378,7 +382,7 @@ func (r *readRune) ReadRune() (rr rune, size int, err error) {
 
 var ssFree = newCache(func() interface{} { return new(ss) })
 
-// Allocate a new ss struct or grab a cached one.
+// newScanState allocates a new ss struct or grab a cached one.
 func newScanState(r io.Reader, nlIsSpace, nlIsEnd bool) (s *ss, old ssave) {
 	// If the reader is a *ss, then we've got a recursive
 	// call to Scan, so re-use the scan state.
@@ -410,7 +414,7 @@ func newScanState(r io.Reader, nlIsSpace, nlIsEnd bool) (s *ss, old ssave) {
 	return
 }
 
-// Save used ss structs in ssFree; avoid an allocation per invocation.
+// free saves used ss structs in ssFree; avoid an allocation per invocation.
 func (s *ss) free(old ssave) {
 	// If it was used recursively, just restore the old state.
 	if old.validSave {
@@ -1090,7 +1094,8 @@ func (s *ss) advance(format string) (i int) {
 			// There was space in the format, so there should be space (EOF)
 			// in the input.
 			inputc := s.getRune()
-			if inputc == eof {
+			if inputc == eof || inputc == '\n' {
+				// If we've reached a newline, stop now; don't read ahead.
 				return
 			}
 			if !isSpace(inputc) {

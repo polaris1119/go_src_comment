@@ -19,7 +19,6 @@
 #include "malloc.h"
 
 static bool MCentral_Grow(MCentral *c);
-static void* MCentral_Alloc(MCentral *c);
 static void MCentral_Free(MCentral *c, void *v);
 
 // Initialize a single central free list.
@@ -34,12 +33,13 @@ runtime·MCentral_Init(MCentral *c, int32 sizeclass)
 // Allocate up to n objects from the central free list.
 // Return the number of objects allocated.
 // The objects are linked together by their first words.
-// On return, *pstart points at the first object and *pend at the last.
+// On return, *pstart points at the first object.
 int32
 runtime·MCentral_AllocList(MCentral *c, int32 n, MLink **pfirst)
 {
-	MLink *first, *last, *v;
-	int32 i;
+	MSpan *s;
+	MLink *first, *last;
+	int32 cap, avail, i;
 
 	runtime·lock(c);
 	// Replenish central list if empty.
@@ -50,47 +50,37 @@ runtime·MCentral_AllocList(MCentral *c, int32 n, MLink **pfirst)
 			return 0;
 		}
 	}
-
-	// Copy from list, up to n.
-	// First one is guaranteed to work, because we just grew the list.
-	first = MCentral_Alloc(c);
-	last = first;
-	for(i=1; i<n && (v = MCentral_Alloc(c)) != nil; i++) {
-		last->next = v;
-		last = v;
-	}
-	last->next = nil;
-	c->nfree -= i;
-
-	runtime·unlock(c);
-	*pfirst = first;
-	return i;
-}
-
-// Helper: allocate one object from the central free list.
-static void*
-MCentral_Alloc(MCentral *c)
-{
-	MSpan *s;
-	MLink *v;
-
-	if(runtime·MSpanList_IsEmpty(&c->nonempty))
-		return nil;
 	s = c->nonempty.next;
-	s->ref++;
-	v = s->freelist;
-	s->freelist = v->next;
-	if(s->freelist == nil) {
+	cap = (s->npages << PageShift) / s->elemsize;
+	avail = cap - s->ref;
+	if(avail < n)
+		n = avail;
+
+	// First one is guaranteed to work, because we just grew the list.
+	first = s->freelist;
+	last = first;
+	for(i=1; i<n; i++) {
+		last = last->next;
+	}
+	s->freelist = last->next;
+	last->next = nil;
+	s->ref += n;
+	c->nfree -= n;
+
+	if(n == avail) {
+		if(s->freelist != nil || s->ref != cap) {
+			runtime·throw("invalid freelist");
+		}
 		runtime·MSpanList_Remove(s);
 		runtime·MSpanList_Insert(&c->empty, s);
 	}
-	return v;
+
+	runtime·unlock(c);
+	*pfirst = first;
+	return n;
 }
 
 // Free n objects back into the central free list.
-// Return the number of objects allocated.
-// The objects are linked together by their first words.
-// On return, *pstart points at the first object and *pend at the last.
 void
 runtime·MCentral_FreeList(MCentral *c, int32 n, MLink *start)
 {
@@ -118,7 +108,7 @@ MCentral_Free(MCentral *c, void *v)
 	int32 size;
 
 	// Find span for v.
-	s = runtime·MHeap_Lookup(&runtime·mheap, v);
+	s = runtime·MHeap_Lookup(runtime·mheap, v);
 	if(s == nil || s->ref == 0)
 		runtime·throw("invalid free");
 
@@ -143,8 +133,44 @@ MCentral_Free(MCentral *c, void *v)
 		s->freelist = nil;
 		c->nfree -= (s->npages << PageShift) / size;
 		runtime·unlock(c);
-		runtime·MHeap_Free(&runtime·mheap, s, 0);
+		runtime·MHeap_Free(runtime·mheap, s, 0);
 		runtime·lock(c);
+	}
+}
+
+// Free n objects from a span s back into the central free list c.
+// Called from GC.
+void
+runtime·MCentral_FreeSpan(MCentral *c, MSpan *s, int32 n, MLink *start, MLink *end)
+{
+	int32 size;
+
+	runtime·lock(c);
+
+	// Move to nonempty if necessary.
+	if(s->freelist == nil) {
+		runtime·MSpanList_Remove(s);
+		runtime·MSpanList_Insert(&c->nonempty, s);
+	}
+
+	// Add the objects back to s's free list.
+	end->next = s->freelist;
+	s->freelist = start;
+	s->ref -= n;
+	c->nfree += n;
+
+	// If s is completely freed, return it to the heap.
+	if(s->ref == 0) {
+		size = runtime·class_to_size[c->sizeclass];
+		runtime·MSpanList_Remove(s);
+		*(uintptr*)(s->start<<PageShift) = 1;  // needs zeroing
+		s->freelist = nil;
+		c->nfree -= (s->npages << PageShift) / size;
+		runtime·unlock(c);
+		runtime·unmarkspan((byte*)(s->start<<PageShift), s->npages<<PageShift);
+		runtime·MHeap_Free(runtime·mheap, s, 0);
+	} else {
+		runtime·unlock(c);
 	}
 }
 
@@ -174,7 +200,7 @@ MCentral_Grow(MCentral *c)
 
 	runtime·unlock(c);
 	runtime·MGetSizeClassInfo(c->sizeclass, &size, &npages, &n);
-	s = runtime·MHeap_Alloc(&runtime·mheap, npages, c->sizeclass, 0);
+	s = runtime·MHeap_Alloc(runtime·mheap, npages, c->sizeclass, 0, 1);
 	if(s == nil) {
 		// TODO(rsc): Log out of memory
 		runtime·lock(c);

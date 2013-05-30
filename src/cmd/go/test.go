@@ -48,6 +48,10 @@ followed by detailed output for each failed package.
 'Go test' recompiles each package along with any files with names matching
 the file pattern "*_test.go".  These additional files can contain test functions,
 benchmark functions, and example functions.  See 'go help testfunc' for more.
+Each listed package causes the execution of a separate test binary.
+
+Test files that declare a package with the suffix "_test" will be compiled as a
+separate package, and then linked and run with the main test binary.
 
 By default, go test needs no arguments.  It compiles and tests the package
 with source in the current directory, including tests, and runs the tests.
@@ -58,6 +62,7 @@ non-test installation.
 In addition to the build flags, the flags handled by 'go test' itself are:
 
 	-c  Compile the test binary to pkg.test but do not run it.
+	    (Where pkg is the last element of the package's import path.)
 
 	-i
 	    Install packages that are dependencies of the test.
@@ -80,28 +85,53 @@ var helpTestflag = &Command{
 The 'go test' command takes both flags that apply to 'go test' itself
 and flags that apply to the resulting test binary.
 
-The test binary, called pkg.test, where pkg is the name of the
-directory containing the package sources, has its own flags:
+Several of the flags control profiling and write an execution profile
+suitable for "go tool pprof"; run "go tool pprof help" for more
+information.  The --alloc_space, --alloc_objects, and --show_bytes
+options of pprof control how the information is presented.
 
-	-test.v
-	    Verbose output: log all tests as they are run.
+The following flags are recognized by the 'go test' command and
+control the execution of any test:
 
-	-test.run pattern
-	    Run only those tests and examples matching the regular
-	    expression.
-
-	-test.bench pattern
+	-bench regexp
 	    Run benchmarks matching the regular expression.
-	    By default, no benchmarks run.
+	    By default, no benchmarks run. To run all benchmarks,
+	    use '-bench .' or '-bench=.'.
 
-	-test.cpuprofile cpu.out
+	-benchmem
+	    Print memory allocation statistics for benchmarks.
+
+	-benchtime t
+	    Run enough iterations of each benchmark to take t, specified
+	    as a time.Duration (for example, -benchtime 1h30s).
+	    The default is 1 second (1s).
+
+	-blockprofile block.out
+	    Write a goroutine blocking profile to the specified file
+	    when all tests are complete.
+
+	-blockprofilerate n
+	    Control the detail provided in goroutine blocking profiles by
+	    calling runtime.SetBlockProfileRate with n.
+	    See 'godoc runtime SetBlockProfileRate'.
+	    The profiler aims to sample, on average, one blocking event every
+	    n nanoseconds the program spends blocked.  By default,
+	    if -test.blockprofile is set without this flag, all blocking events
+	    are recorded, equivalent to -test.blockprofilerate=1.
+
+	-cpu 1,2,4
+	    Specify a list of GOMAXPROCS values for which the tests or
+	    benchmarks should be executed.  The default is the current value
+	    of GOMAXPROCS.
+
+	-cpuprofile cpu.out
 	    Write a CPU profile to the specified file before exiting.
 
-	-test.memprofile mem.out
-	    Write a memory profile to the specified file when all tests
-	    are complete.
+	-memprofile mem.out
+	    Write a memory profile to the specified file after all tests
+	    have passed.
 
-	-test.memprofilerate n
+	-memprofilerate n
 	    Enable more precise (and expensive) memory profiles by setting
 	    runtime.MemProfileRate.  See 'godoc runtime MemProfileRate'.
 	    To profile all memory allocations, use -test.memprofilerate=1
@@ -109,38 +139,47 @@ directory containing the package sources, has its own flags:
 	    garbage collector, provided the test can run in the available
 	    memory without garbage collection.
 
-	-test.parallel n
+	-parallel n
 	    Allow parallel execution of test functions that call t.Parallel.
 	    The value of this flag is the maximum number of tests to run
 	    simultaneously; by default, it is set to the value of GOMAXPROCS.
 
-	-test.short
+	-run regexp
+	    Run only those tests and examples matching the regular
+	    expression.
+
+	-short
 	    Tell long-running tests to shorten their run time.
 	    It is off by default but set during all.bash so that installing
 	    the Go tree can run a sanity check but not spend time running
 	    exhaustive tests.
 
-	-test.timeout t
-		If a test runs longer than t, panic.
+	-timeout t
+	    If a test runs longer than t, panic.
 
-	-test.benchtime n
-		Run enough iterations of each benchmark to take n seconds.
-		The default is 1 second.
+	-v
+	    Verbose output: log all tests as they are run. Also print all
+	    text from Log and Logf calls even if the test succeeds.
 
-	-test.cpu 1,2,4
-	    Specify a list of GOMAXPROCS values for which the tests or
-	    benchmarks should be executed.  The default is the current value
-	    of GOMAXPROCS.
+The test binary, called pkg.test where pkg is the name of the
+directory containing the package sources, can be invoked directly
+after building it with 'go test -c'. When invoking the test binary
+directly, each of the standard flag names must be prefixed with 'test.',
+as in -test.run=TestMyFunc or -test.v.
 
-For convenience, each of these -test.X flags of the test binary is
-also available as the flag -X in 'go test' itself.  Flags not listed
-here are passed through unaltered.  For instance, the command
+When running 'go test', flags not listed above are passed through
+unaltered. For instance, the command
 
 	go test -x -v -cpuprofile=prof.out -dir=testdata -update
 
 will compile the test binary and then run it as
 
 	pkg.test -test.v -test.cpuprofile=prof.out -dir=testdata -update
+
+The test flags that generate profiles also leave the test binary in pkg.test
+for use when analyzing the profiles.
+
+Flags not recognized by 'go test' must be placed after any specified packages.
 `,
 }
 
@@ -160,8 +199,8 @@ A benchmark function is one named BenchmarkXXX and should have the signature,
 
 	func BenchmarkXXX(b *testing.B) { ... }
 
-An example function is similar to a test function but, instead of using *testing.T
-to report success or failure, prints output to os.Stdout and os.Stderr.
+An example function is similar to a test function but, instead of using
+*testing.T to report success or failure, prints output to os.Stdout.
 That output is compared against the function's "Output:" comment, which
 must be the last comment in the function body (see example below). An
 example with no such comment, or with no text after "Output:" is compiled
@@ -191,6 +230,7 @@ See the documentation of the testing package for more information.
 
 var (
 	testC            bool     // -c flag
+	testProfile      bool     // some profiling flag
 	testI            bool     // -i flag
 	testV            bool     // -v flag
 	testFiles        []string // -file flag(s)  TODO: not respected
@@ -207,6 +247,7 @@ func runTest(cmd *Command, args []string) {
 	var pkgArgs []string
 	pkgArgs, testArgs = testFlags(args)
 
+	raceInit()
 	pkgs := packagesForBuild(pkgArgs)
 	if len(pkgs) == 0 {
 		fatalf("no packages to test")
@@ -215,12 +256,15 @@ func runTest(cmd *Command, args []string) {
 	if testC && len(pkgs) != 1 {
 		fatalf("cannot use -c flag with multiple packages")
 	}
+	if testProfile && len(pkgs) != 1 {
+		fatalf("cannot use test profile flag with multiple packages")
+	}
 
 	// If a test timeout was given and is parseable, set our kill timeout
 	// to that timeout plus one minute.  This is a backup alarm in case
 	// the test wedges with a goroutine spinning and its background
 	// timer does not get a chance to fire.
-	if dt, err := time.ParseDuration(testTimeout); err == nil {
+	if dt, err := time.ParseDuration(testTimeout); err == nil && dt > 0 {
 		testKillTimeout = dt + 1*time.Minute
 	}
 
@@ -276,7 +320,9 @@ func runTest(cmd *Command, args []string) {
 
 		all := []string{}
 		for path := range deps {
-			all = append(all, path)
+			if !build.IsLocalImport(path) {
+				all = append(all, path)
+			}
 		}
 		sort.Strings(all)
 
@@ -361,7 +407,11 @@ func runTest(cmd *Command, args []string) {
 		if args != "" {
 			args = " " + args
 		}
-		fmt.Fprintf(os.Stderr, "installing these packages with 'go test -i%s' will speed future tests.\n\n", args)
+		extraOpts := ""
+		if buildRace {
+			extraOpts = "-race "
+		}
+		fmt.Fprintf(os.Stderr, "installing these packages with 'go test %s-i%s' will speed future tests.\n\n", extraOpts, args)
 	}
 
 	b.do(root)
@@ -405,7 +455,14 @@ func (b *builder) test(p *Package) (buildAction, runAction, printAction *action,
 
 	// Use last element of import path, not package name.
 	// They differ when package name is "main".
-	_, elem := path.Split(p.ImportPath)
+	// But if the import path is "command-line-arguments",
+	// like it is during 'go run', use the package name.
+	var elem string
+	if p.ImportPath == "command-line-arguments" {
+		elem = p.Name
+	} else {
+		_, elem = path.Split(p.ImportPath)
+	}
 	testBinary := elem + ".test"
 
 	// The ptest package needs to be importable under the
@@ -532,14 +589,17 @@ func (b *builder) test(p *Package) (buildAction, runAction, printAction *action,
 	a.target = filepath.Join(testDir, testBinary) + exeSuffix
 	pmainAction := a
 
-	if testC {
-		// -c flag: create action to copy binary to ./test.out.
+	if testC || testProfile {
+		// -c or profiling flag: create action to copy binary to ./test.out.
 		runAction = &action{
 			f:      (*builder).install,
 			deps:   []*action{pmainAction},
 			p:      pmain,
-			target: testBinary + exeSuffix,
+			target: filepath.Join(cwd, testBinary+exeSuffix),
 		}
+		pmainAction = runAction // in case we are running the test
+	}
+	if testC {
 		printAction = &action{p: p, deps: []*action{runAction}} // nop
 	} else {
 		// run test
@@ -586,6 +646,7 @@ func (b *builder) runTest(a *action) error {
 
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = a.p.Dir
+	cmd.Env = envForDir(cmd.Dir)
 	var buf bytes.Buffer
 	if testStreamOutput {
 		cmd.Stdout = os.Stdout
@@ -595,14 +656,34 @@ func (b *builder) runTest(a *action) error {
 		cmd.Stderr = &buf
 	}
 
+	// If there are any local SWIG dependencies, we want to load
+	// the shared library from the build directory.
+	if a.p.usesSwig() {
+		env := cmd.Env
+		found := false
+		prefix := "LD_LIBRARY_PATH="
+		for i, v := range env {
+			if strings.HasPrefix(v, prefix) {
+				env[i] = v + ":."
+				found = true
+				break
+			}
+		}
+		if !found {
+			env = append(env, "LD_LIBRARY_PATH=.")
+		}
+		cmd.Env = env
+	}
+
 	t0 := time.Now()
 	err := cmd.Start()
 
 	// This is a last-ditch deadline to detect and
 	// stop wedged test binaries, to keep the builders
 	// running.
-	tick := time.NewTimer(testKillTimeout)
 	if err == nil {
+		tick := time.NewTimer(testKillTimeout)
+		startSigHandlers()
 		done := make(chan error)
 		go func() {
 			done <- cmd.Wait()
@@ -613,13 +694,12 @@ func (b *builder) runTest(a *action) error {
 		case <-tick.C:
 			cmd.Process.Kill()
 			err = <-done
-			fmt.Fprintf(&buf, "*** Test killed: ran too long.\n")
+			fmt.Fprintf(&buf, "*** Test killed: ran too long (%v).\n", testKillTimeout)
 		}
 		tick.Stop()
 	}
 	out := buf.Bytes()
-	t1 := time.Now()
-	t := fmt.Sprintf("%.3fs", t1.Sub(t0).Seconds())
+	t := fmt.Sprintf("%.3fs", time.Since(t0).Seconds())
 	if err == nil {
 		if testShowPass {
 			a.testOutput.Write(out)
@@ -750,8 +830,10 @@ func (t *testFuncs) load(filename, pkg string, seen *bool) error {
 			*seen = true
 		}
 	}
-	for _, e := range doc.Examples(f) {
-		if e.Output == "" {
+	ex := doc.Examples(f)
+	sort.Sort(byOrder(ex))
+	for _, e := range ex {
+		if e.Output == "" && !e.EmptyOutput {
 			// Don't run examples with no output.
 			continue
 		}
@@ -760,6 +842,12 @@ func (t *testFuncs) load(filename, pkg string, seen *bool) error {
 	}
 	return nil
 }
+
+type byOrder []*doc.Example
+
+func (x byOrder) Len() int           { return len(x) }
+func (x byOrder) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
+func (x byOrder) Less(i, j int) bool { return x[i].Order < x[j].Order }
 
 var testmainTmpl = template.Must(template.New("main").Parse(`
 package main

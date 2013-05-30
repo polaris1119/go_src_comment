@@ -94,9 +94,9 @@ zaddr(Biobuf *b, Addr *a, int s, int gotype)
 	switch(a->type) {
 
 	case D_BRANCH:
-		if(a->branch == nil)
+		if(a->u.branch == nil)
 			fatal("unpatched branch");
-		a->offset = a->branch->loc;
+		a->offset = a->u.branch->loc;
 
 	default:
 		t |= T_TYPE;
@@ -139,7 +139,7 @@ zaddr(Biobuf *b, Addr *a, int s, int gotype)
 	if(t & T_SYM)		/* implies sym */
 		Bputc(b, s);
 	if(t & T_FCONST) {
-		ieeedtod(&e, a->dval);
+		ieeedtod(&e, a->u.dval);
 		l = e;
 		Bputc(b, l);
 		Bputc(b, l>>8);
@@ -153,7 +153,7 @@ zaddr(Biobuf *b, Addr *a, int s, int gotype)
 		return;
 	}
 	if(t & T_SCONST) {
-		n = a->sval;
+		n = a->u.sval;
 		for(i=0; i<NSNAME; i++) {
 			Bputc(b, *n);
 			n++;
@@ -295,7 +295,7 @@ dsname(Sym *s, int off, char *t, int n)
 	
 	p->to.type = D_SCONST;
 	p->to.index = D_NONE;
-	memmove(p->to.sval, t, n);
+	memmove(p->to.u.sval, t, n);
 	return off + n;
 }
 
@@ -312,8 +312,8 @@ datastring(char *s, int len, Addr *a)
 	a->type = D_EXTERN;
 	a->sym = sym;
 	a->node = sym->def;
-	a->offset = widthptr+4;  // skip header
-	a->etype = TINT32;
+	a->offset = widthptr+widthint;  // skip header
+	a->etype = simtype[TINT];
 }
 
 /*
@@ -324,7 +324,7 @@ void
 datagostring(Strlit *sval, Addr *a)
 {
 	Sym *sym;
-	
+
 	sym = stringsym(sval->s, sval->len);
 	a->type = D_EXTERN;
 	a->sym = sym;
@@ -364,13 +364,13 @@ gdatacomplex(Node *nam, Mpcplx *cval)
 	p = gins(ADATA, nam, N);
 	p->from.scale = w;
 	p->to.type = D_FCONST;
-	p->to.dval = mpgetflt(&cval->real);
+	p->to.u.dval = mpgetflt(&cval->real);
 
 	p = gins(ADATA, nam, N);
 	p->from.scale = w;
 	p->from.offset += w;
 	p->to.type = D_FCONST;
-	p->to.dval = mpgetflt(&cval->imag);
+	p->to.u.dval = mpgetflt(&cval->imag);
 }
 
 void
@@ -386,10 +386,10 @@ gdatastring(Node *nam, Strlit *sval)
 	p->to.type = D_ADDR;
 //print("%P\n", p);
 
-	nodconst(&nod1, types[TINT32], sval->len);
+	nodconst(&nod1, types[TINT], sval->len);
 	p = gins(ADATA, nam, &nod1);
-	p->from.scale = types[TINT32]->width;
-	p->from.offset += types[tptr]->width;
+	p->from.scale = widthint;
+	p->from.offset += widthptr;
 }
 
 int
@@ -408,7 +408,7 @@ dstringptr(Sym *s, int off, char *str)
 	datastring(str, strlen(str)+1, &p->to);
 	p->to.index = p->to.type;
 	p->to.type = D_ADDR;
-	p->to.etype = TINT32;
+	p->to.etype = simtype[TINT];
 	off += widthptr;
 
 	return off;
@@ -432,7 +432,7 @@ dgostrlitptr(Sym *s, int off, Strlit *lit)
 	datagostring(lit, &p->to);
 	p->to.index = p->to.type;
 	p->to.type = D_ADDR;
-	p->to.etype = TINT32;
+	p->to.etype = simtype[TINT];
 	off += widthptr;
 
 	return off;
@@ -501,7 +501,8 @@ void
 genembedtramp(Type *rcvr, Type *method, Sym *newnam, int iface)
 {
 	Sym *e;
-	int c, d, o, mov, add, loaded;
+	int c, d, mov, add, loaded;
+	int64 o;
 	Prog *p;
 	Type *f;
 	

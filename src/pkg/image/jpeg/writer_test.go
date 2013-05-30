@@ -148,46 +148,52 @@ func TestWriter(t *testing.T) {
 			t.Error(tc.filename, err)
 			continue
 		}
-		// Compute the average delta in RGB space.
-		b := m0.Bounds()
-		var sum, n int64
-		for y := b.Min.Y; y < b.Max.Y; y++ {
-			for x := b.Min.X; x < b.Max.X; x++ {
-				c0 := m0.At(x, y)
-				c1 := m1.At(x, y)
-				r0, g0, b0, _ := c0.RGBA()
-				r1, g1, b1, _ := c1.RGBA()
-				sum += delta(r0, r1)
-				sum += delta(g0, g1)
-				sum += delta(b0, b1)
-				n += 3
-			}
+		if m0.Bounds() != m1.Bounds() {
+			t.Errorf("%s, bounds differ: %v and %v", tc.filename, m0.Bounds(), m1.Bounds())
+			continue
 		}
 		// Compare the average delta to the tolerance level.
-		if sum/n > tc.tolerance {
+		if averageDelta(m0, m1) > tc.tolerance {
 			t.Errorf("%s, quality=%d: average delta is too high", tc.filename, tc.quality)
 			continue
 		}
 	}
 }
 
-func BenchmarkEncodeRGBOpaque(b *testing.B) {
+// averageDelta returns the average delta in RGB space. The two images must
+// have the same bounds.
+func averageDelta(m0, m1 image.Image) int64 {
+	b := m0.Bounds()
+	var sum, n int64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c0 := m0.At(x, y)
+			c1 := m1.At(x, y)
+			r0, g0, b0, _ := c0.RGBA()
+			r1, g1, b1, _ := c1.RGBA()
+			sum += delta(r0, r1)
+			sum += delta(g0, g1)
+			sum += delta(b0, b1)
+			n += 3
+		}
+	}
+	return sum / n
+}
+
+func BenchmarkEncode(b *testing.B) {
 	b.StopTimer()
 	img := image.NewRGBA(image.Rect(0, 0, 640, 480))
-	// Set all pixels to 0xFF alpha to force opaque mode.
 	bo := img.Bounds()
 	rnd := rand.New(rand.NewSource(123))
 	for y := bo.Min.Y; y < bo.Max.Y; y++ {
 		for x := bo.Min.X; x < bo.Max.X; x++ {
-			img.Set(x, y, color.RGBA{
+			img.SetRGBA(x, y, color.RGBA{
 				uint8(rnd.Intn(256)),
 				uint8(rnd.Intn(256)),
 				uint8(rnd.Intn(256)),
-				255})
+				255,
+			})
 		}
-	}
-	if !img.Opaque() {
-		b.Fatal("expected image to be opaque")
 	}
 	b.SetBytes(640 * 480 * 4)
 	b.StartTimer()

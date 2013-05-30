@@ -40,7 +40,7 @@ func (d *Data) parseAbbrev(off uint32) (abbrevTable, error) {
 	} else {
 		data = data[off:]
 	}
-	b := makeBuf(d, "abbrev", 0, data, 0)
+	b := makeBuf(d, unknownFormat{}, "abbrev", 0, data)
 
 	// Error handling is simplified by the buf getters
 	// returning an endless stream of 0s after an error.
@@ -185,10 +185,28 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 		// flag
 		case formFlag:
 			val = b.uint8() == 1
+		case formFlagPresent:
+			// The attribute is implicitly indicated as present, and no value is
+			// encoded in the debugging information entry itself.
+			val = true
 
 		// reference to other entry
 		case formRefAddr:
-			val = Offset(b.addr())
+			vers := b.format.version()
+			if vers == 0 {
+				b.error("unknown version for DW_FORM_ref_addr")
+			} else if vers == 2 {
+				val = Offset(b.addr())
+			} else {
+				is64, known := b.format.dwarf64()
+				if !known {
+					b.error("unknown size for DW_FORM_ref_addr")
+				} else if is64 {
+					val = Offset(b.uint64())
+				} else {
+					val = Offset(b.uint32())
+				}
+			}
 		case formRef1:
 			val = Offset(b.uint8()) + ubase
 		case formRef2:
@@ -208,7 +226,7 @@ func (b *buf) entry(atab abbrevTable, ubase Offset) *Entry {
 			if b.err != nil {
 				return nil
 			}
-			b1 := makeBuf(b.dwarf, "str", 0, b.dwarf.str, 0)
+			b1 := makeBuf(b.dwarf, unknownFormat{}, "str", 0, b.dwarf.str)
 			b1.skip(int(off))
 			val = b1.string()
 			if b1.err != nil {
@@ -258,7 +276,7 @@ func (r *Reader) Seek(off Offset) {
 		}
 		u := &d.unit[0]
 		r.unit = 0
-		r.b = makeBuf(r.d, "info", u.off, u.data, u.addrsize)
+		r.b = makeBuf(r.d, u, "info", u.off, u.data)
 		return
 	}
 
@@ -269,7 +287,7 @@ func (r *Reader) Seek(off Offset) {
 		u = &d.unit[i]
 		if u.off <= off && off < u.off+Offset(len(u.data)) {
 			r.unit = i
-			r.b = makeBuf(r.d, "info", off, u.data[off-u.off:], u.addrsize)
+			r.b = makeBuf(r.d, u, "info", off, u.data[off-u.off:])
 			return
 		}
 	}
@@ -281,7 +299,7 @@ func (r *Reader) maybeNextUnit() {
 	for len(r.b.data) == 0 && r.unit+1 < len(r.d.unit) {
 		r.unit++
 		u := &r.d.unit[r.unit]
-		r.b = makeBuf(r.d, "info", u.off, u.data, u.addrsize)
+		r.b = makeBuf(r.d, u, "info", u.off, u.data)
 	}
 }
 

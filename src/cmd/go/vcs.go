@@ -81,7 +81,7 @@ var vcsHg = &vcsCmd{
 	tagSyncCmd:     "update -r {tag}",
 	tagSyncDefault: "update default",
 
-	scheme:  []string{"https", "http"},
+	scheme:  []string{"https", "http", "ssh"},
 	pingCmd: "identify {scheme}://{repo}",
 }
 
@@ -180,8 +180,17 @@ func (v *vcsCmd) run1(dir string, cmdline string, keyval []string, verbose bool)
 		args[i] = expand(m, arg)
 	}
 
+	_, err := exec.LookPath(v.cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"go: missing %s command. See http://golang.org/s/gogetcmd\n",
+			v.name)
+		return nil, err
+	}
+
 	cmd := exec.Command(v.cmd, args...)
 	cmd.Dir = dir
+	cmd.Env = envForDir(cmd.Dir)
 	if buildX {
 		fmt.Printf("cd %s\n", dir)
 		fmt.Printf("%s %s\n", v.cmd, strings.Join(args, " "))
@@ -189,7 +198,7 @@ func (v *vcsCmd) run1(dir string, cmdline string, keyval []string, verbose bool)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
-	err := cmd.Run()
+	err = cmd.Run()
 	out := buf.Bytes()
 	if err != nil {
 		if verbose || buildV {
@@ -632,7 +641,7 @@ func oldGoogleCode(match map[string]string) error {
 }
 
 // bitbucketVCS determines the version control system for a
-// BitBucket repository, by using the BitBucket API.
+// Bitbucket repository, by using the Bitbucket API.
 func bitbucketVCS(match map[string]string) error {
 	if err := noVCSSuffix(match); err != nil {
 		return err

@@ -329,8 +329,6 @@ struct
 	"STREXD",		LTYPE9, ASTREXD,
 
 /*
-	"ABSF",		LTYPEI, AABSF,
-	"ABSD",		LTYPEI, AABSD,
 	"NEGF",		LTYPEI, ANEGF,
 	"NEGD",		LTYPEI, ANEGD,
 	"SQTF",		LTYPEI,	ASQTF,
@@ -343,6 +341,8 @@ struct
 	"NRMD",		LTYPEI,	ANRMD,
 */
 
+	"ABSF",		LTYPEI, AABSF,
+	"ABSD",		LTYPEI, AABSD,
 	"SQRTF",	LTYPEI, ASQRTF,
 	"SQRTD",	LTYPEI, ASQRTD,
 	"CMPF",		LTYPEL, ACMPF,
@@ -403,6 +403,18 @@ struct
 
 	"MCR",		LTYPEJ, 0,
 	"MRC",		LTYPEJ, 1,
+
+	"PLD",		LTYPEPLD, APLD,
+	"UNDEF",	LTYPEE,	AUNDEF,
+	"CLZ",		LTYPE2, ACLZ,
+
+	"MULWT",	LTYPE1, AMULWT,
+	"MULWB",	LTYPE1, AMULWB,
+	"MULAWT",	LTYPEN, AMULAWT,
+	"MULAWB",	LTYPEN, AMULAWB,
+
+	"USEFIELD",	LTYPEN, AUSEFIELD,
+
 	0
 };
 
@@ -493,6 +505,7 @@ zaddr(Gen *a, int s)
 	Bputc(&obuf, a->reg);
 	Bputc(&obuf, s);
 	Bputc(&obuf, a->name);
+	Bputc(&obuf, 0);
 	switch(a->type) {
 	default:
 		print("unknown type %d\n", a->type);
@@ -506,6 +519,7 @@ zaddr(Gen *a, int s)
 		break;
 
 	case D_REGREG:
+	case D_REGREG2:
 		Bputc(&obuf, a->offset);
 		break;
 

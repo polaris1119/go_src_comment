@@ -25,6 +25,14 @@ argv_fix:
 	ADDL	$4, BP
 	LOOP	argv_fix
 	
+	CALL	runtime·asminit(SB)
+
+	MOVL	0(SP), AX
+	LEAL	4(SP), BX
+	PUSHL	BX
+	PUSHL	AX
+	PUSHL	$-1
+
 	JMP	_rt0_386(SB)
 
 DATA  runtime·isplan9(SB)/4, $1

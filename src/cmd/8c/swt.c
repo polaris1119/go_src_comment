@@ -251,18 +251,12 @@ outcode(void)
 	Binit(&b, f, OWRITE);
 
 	Bprint(&b, "go object %s %s %s\n", getgoos(), thestring, getgoversion());
-	if(ndynimp > 0 || ndynexp > 0) {
-		int i;
-
+	if(pragcgobuf.to > pragcgobuf.start) {
 		Bprint(&b, "\n");
 		Bprint(&b, "$$  // exports\n\n");
 		Bprint(&b, "$$  // local types\n\n");
-		Bprint(&b, "$$  // dynimport\n");
-		for(i=0; i<ndynimp; i++)
-			Bprint(&b, "dynimport %s %s %s\n", dynimp[i].local, dynimp[i].remote, dynimp[i].path);
-		Bprint(&b, "\n$$  // dynexport\n");
-		for(i=0; i<ndynexp; i++)
-			Bprint(&b, "dynexport %s %s\n", dynexp[i].local, dynexp[i].remote);
+		Bprint(&b, "$$  // cgo\n");
+		Bprint(&b, "%s", fmtstrflush(&pragcgobuf));
 		Bprint(&b, "\n$$\n\n");
 	}
 	Bprint(&b, "!\n");
@@ -330,7 +324,7 @@ outcode(void)
 		zaddr(&b, &p->from, sf);
 		zaddr(&b, &p->to, st);
 	}
-	Bflush(&b);
+	Bterm(&b);
 	close(f);
 	firstp = P;
 	lastp = P;
@@ -628,8 +622,8 @@ align(int32 i, Type *t, int op, int32 *maxalign)
 int32
 maxround(int32 max, int32 v)
 {
-	v += SZ_LONG-1;
+	v = xround(v, SZ_LONG);
 	if(v > max)
-		max = xround(v, SZ_LONG);
+		return v;
 	return max;
 }

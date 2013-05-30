@@ -65,8 +65,8 @@ package's brief description:
 {{code "/src/pkg/sort/sort.go" `/Package sort provides/` `/package sort/`}}
 
 <p>
-They can also be detailed like the <a href="/pkg/encoding/gob/">gob package</a>'s
-overview. That package uses another convention for packages
+They can also be detailed like the <a href="/pkg/encoding/gob/"><code>gob</code></a>
+package's overview. That package uses another convention for packages
 that need large amounts of introductory documentation: the package comment is
 placed in its own file, <a href="/src/pkg/encoding/gob/doc.go">doc.go</a>, which
 contains only those comments and a package clause.
@@ -80,21 +80,23 @@ sentence will appear in godoc's <a href="/pkg/">package list</a>.
 <p>
 Comments that are not adjacent to a top-level declaration are omitted from
 godoc's output, with one notable exception. Top-level comments that begin with
-the word <code>"BUG(who)”</code> are recognized as known bugs, and included in
-the "Bugs” section of the package documentation. The "who” part should be the
+the word <code>"BUG(who)"</code> are recognized as known bugs, and included in
+the "Bugs" section of the package documentation. The "who" part should be the
 user name of someone who could provide more information. For example, this is a
-known issue from the <a href="/pkg/bytes/#bugs">bytes package</a>:
+known issue from the <a href="/pkg/sync/atomic/#pkg-note-BUG"><code>sync/atomic</code></a> package:
 </p>
 
 <pre>
-// BUG(r): The rule Title uses for word boundaries does not handle Unicode punctuation properly.
+// BUG(rsc): On x86-32, the 64-bit functions use instructions
+// unavailable before the Pentium MMX. On both ARM and x86-32, it is the
+// caller's responsibility to arrange for 64-bit alignment of 64-bit
+// words accessed atomically.
 </pre>
 
 <p>
-Godoc treats executable commands somewhat differently. Instead of inspecting the
-command source code, it looks for a Go source file belonging to the special
-package "documentation”. The comment on the "package documentation” clause is
-used as the command's documentation. For example, see the
+Godoc treats executable commands in the same way. It looks for a comment on
+package main, which is sometimes put in a separate file called <code>doc.go</code>.
+For example, see the
 <a href="/cmd/godoc/">godoc documentation</a> and its corresponding
 <a href="/src/cmd/godoc/doc.go">doc.go</a> file.
 </p>
@@ -136,4 +138,10 @@ command-line and HTTP interfaces, and you can specify additional paths for
 indexing via the <code>-path</code> flag or just by running <code>"godoc ."</code>
 in the source directory. See the <a href="/cmd/godoc/">godoc documentation</a>
 for more details.
+</p>
+
+<p>
+Godoc recognizes example functions written according to the
+<a href="/pkg/testing/#pkg-overview"><code>testing</code></a> package's naming
+conventions and presents them appropriately.
 </p>

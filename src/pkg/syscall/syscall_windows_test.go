@@ -35,7 +35,7 @@ func TestWin32finddata(t *testing.T) {
 	var want byte = 2 // it is unlikely to have this character in the filename
 	x := X{got: want}
 
-	pathp := syscall.StringToUTF16Ptr(path)
+	pathp, _ := syscall.UTF16PtrFromString(path)
 	h, err := syscall.FindFirstFile(pathp, &(x.fd))
 	if err != nil {
 		t.Fatalf("FindFirstFile failed: %v", err)
@@ -48,4 +48,25 @@ func TestWin32finddata(t *testing.T) {
 	if x.got != want {
 		t.Fatalf("memory corruption: want=%d got=%d", want, x.got)
 	}
+}
+
+func abort(funcname string, err error) {
+	panic(funcname + " failed: " + err.Error())
+}
+
+func ExampleLoadLibrary() {
+	h, err := syscall.LoadLibrary("kernel32.dll")
+	if err != nil {
+		abort("LoadLibrary", err)
+	}
+	defer syscall.FreeLibrary(h)
+	proc, err := syscall.GetProcAddress(h, "GetVersion")
+	if err != nil {
+		abort("GetProcAddress", err)
+	}
+	r, _, _ := syscall.Syscall(uintptr(proc), 0, 0, 0, 0)
+	major := byte(r)
+	minor := uint8(r >> 8)
+	build := uint16(r >> 16)
+	print("windows version ", major, ".", minor, " (Build ", build, ")\n")
 }

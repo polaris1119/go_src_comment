@@ -5,6 +5,7 @@
 #include <u.h>
 #include <libc.h>
 #include "go.h"
+#include "../../pkg/runtime/mgc0.h"
 
 /*
  * runtime interface and reflection data structures
@@ -14,6 +15,7 @@ static	NodeList*	signatlist;
 static	Sym*	dtypesym(Type*);
 static	Sym*	weaktypesym(Type*);
 static	Sym*	dalgsym(Type*);
+static	Sym*	dgcsym(Type*);
 
 static int
 sigcmp(Sig *a, Sig *b)
@@ -130,7 +132,12 @@ methodfunc(Type *f, Type *receiver)
 		out = list(out, d);
 	}
 
-	return functype(N, in, out);
+	t = functype(N, in, out);
+	if(f->nname) {
+		// Link to name of original method function.
+		t->nname = f->nname;
+	}
+	return t;
 }
 
 /*
@@ -165,6 +172,8 @@ methods(Type *t)
 			fatal("non-method on %T method %S %T\n", mt, f->sym, f);
 		if (!getthisx(f->type)->type)
 			fatal("receiver with no type on %T method %S %T\n", mt, f->sym, f);
+		if(f->nointerface)
+			continue;
 
 		method = f->sym;
 		if(method == nil)
@@ -203,22 +212,26 @@ methods(Type *t)
 				// but we can generate more efficient code
 				// using genembedtramp if all that is necessary
 				// is a pointer adjustment and a JMP.
+				compiling_wrappers = 1;
 				if(isptr[it->etype] && isptr[this->etype]
 				&& f->embedded && !isifacemethod(f->type))
 					genembedtramp(it, f, a->isym, 1);
 				else
 					genwrapper(it, f, a->isym, 1);
+				compiling_wrappers = 0;
 			}
 		}
 
 		if(!(a->tsym->flags & SymSiggen)) {
 			a->tsym->flags |= SymSiggen;
 			if(!eqtype(this, t)) {
+				compiling_wrappers = 1;
 				if(isptr[t->etype] && isptr[this->etype]
 				&& f->embedded && !isifacemethod(f->type))
 					genembedtramp(t, f, a->tsym, 0);
 				else
 					genwrapper(t, f, a->tsym, 0);
+				compiling_wrappers = 0;
 			}
 		}
 	}
@@ -305,7 +318,7 @@ dimportpath(Pkg *p)
 	p->pathsym = n->sym;
 
 	gdatastring(n, p->path);
-	ggloblsym(n->sym, types[TSTRING]->width, 1);
+	ggloblsym(n->sym, types[TSTRING]->width, 1, 1);
 }
 
 static int
@@ -367,9 +380,9 @@ dextratype(Sym *sym, int off, Type *t, int ptroff)
 	}
 
 	// slice header
-	ot = dsymptr(s, ot, s, ot + widthptr + 2*4);
-	ot = duint32(s, ot, n);
-	ot = duint32(s, ot, n);
+	ot = dsymptr(s, ot, s, ot + widthptr + 2*widthint);
+	ot = duintxx(s, ot, n, widthint);
+	ot = duintxx(s, ot, n, widthint);
 
 	// methods
 	for(a=m; a; a=a->link) {
@@ -454,19 +467,6 @@ kinds[] =
 	[TUNSAFEPTR]	= KindUnsafePointer,
 };
 
-static Sym*
-typestruct(Type *t)
-{
-	// We use a weak reference to the reflect type
-	// to avoid requiring package reflect in every binary.
-	// If package reflect is available, the interface{} holding
-	// a runtime type will contain a *reflect.commonType.
-	// Otherwise it will use a nil type word but still be usable
-	// by package runtime (because we always use the memory
-	// after the interface value, not the interface value itself).
-	return pkglookup("*reflect.commonType", weaktypepkg);
-}
-
 int
 haspointers(Type *t)
 {
@@ -521,6 +521,9 @@ dcommontype(Sym *s, int ot, Type *t)
 	Sym *sptr, *algsym;
 	static Sym *algarray;
 	char *p;
+	
+	if(ot != 0)
+		fatal("dcommontype %d", ot);
 
 	sizeofAlg = 4*widthptr;
 	if(algarray == nil)
@@ -536,25 +539,20 @@ dcommontype(Sym *s, int ot, Type *t)
 	else
 		sptr = weaktypesym(ptrto(t));
 
-	// empty interface pointing at this type.
-	// all the references that we emit are *interface{};
-	// they point here.
-	ot = rnd(ot, widthptr);
-	ot = dsymptr(s, ot, typestruct(t), 0);
-	ot = dsymptr(s, ot, s, 2*widthptr);
-
 	// ../../pkg/reflect/type.go:/^type.commonType
 	// actual type structure
 	//	type commonType struct {
-	//		size uintptr;
-	//		hash uint32;
-	//		alg uint8;
-	//		align uint8;
-	//		fieldAlign uint8;
-	//		kind uint8;
-	//		string *string;
-	//		*extraType;
-	//		ptrToThis *Type
+	//		size          uintptr
+	//		hash          uint32
+	//		_             uint8
+	//		align         uint8
+	//		fieldAlign    uint8
+	//		kind          uint8
+	//		alg           unsafe.Pointer
+	//		gc            unsafe.Pointer
+	//		string        *string
+	//		*extraType
+	//		ptrToThis     *Type
 	//	}
 	ot = duintptr(s, ot, t->width);
 	ot = duint32(s, ot, typehash(t));
@@ -579,6 +577,7 @@ dcommontype(Sym *s, int ot, Type *t)
 		ot = dsymptr(s, ot, algarray, alg*sizeofAlg);
 	else
 		ot = dsymptr(s, ot, algsym, 0);
+	ot = dsymptr(s, ot, dgcsym(t), 0);  // gc
 	p = smprint("%-uT", t);
 	//print("dcommontype: %s\n", p);
 	ot = dgostringptr(s, ot, p);	// string
@@ -608,6 +607,39 @@ typesym(Type *t)
 }
 
 Sym*
+tracksym(Type *t)
+{
+	char *p;
+	Sym *s;
+
+	p = smprint("%-T.%s", t->outer, t->sym->name);
+	s = pkglookup(p, trackpkg);
+	free(p);
+	return s;
+}
+
+Sym*
+typelinksym(Type *t)
+{
+	char *p;
+	Sym *s;
+
+	// %-uT is what the generated Type's string field says.
+	// It uses (ambiguous) package names instead of import paths.
+	// %-T is the complete, unambiguous type name.
+	// We want the types to end up sorted by string field,
+	// so use that first in the name, and then add :%-T to
+	// disambiguate. The names are a little long but they are
+	// discarded by the linker and do not end up in the symbol
+	// table of the final binary.
+	p = smprint("%-uT/%-T", t, t);
+	s = pkglookup(p, typelinkpkg);
+	//print("typelinksym: %s -> %+S\n", p, s);
+	free(p);
+	return s;
+}
+
+Sym*
 typesymprefix(char *prefix, Type *t)
 {
 	char *p;
@@ -620,8 +652,8 @@ typesymprefix(char *prefix, Type *t)
 	return s;
 }
 
-Node*
-typename(Type *t)
+Sym*
+typenamesym(Type *t)
 {
 	Sym *s;
 	Node *n;
@@ -642,7 +674,16 @@ typename(Type *t)
 
 		signatlist = list(signatlist, typenod(t));
 	}
+	return s->def->sym;
+}
 
+Node*
+typename(Type *t)
+{
+	Sym *s;
+	Node *n;
+
+	s = typenamesym(t);
 	n = nod(OADDR, s->def, N);
 	n->type = ptrto(s->def->type);
 	n->addable = 1;
@@ -668,7 +709,7 @@ static Sym*
 dtypesym(Type *t)
 {
 	int ot, xt, n, isddd, dupok;
-	Sym *s, *s1, *s2;
+	Sym *s, *s1, *s2, *slink;
 	Sig *a, *m;
 	Type *t1, *tbase, *t2;
 
@@ -765,13 +806,13 @@ ok:
 
 		// two slice headers: in and out.
 		ot = rnd(ot, widthptr);
-		ot = dsymptr(s, ot, s, ot+2*(widthptr+2*4));
+		ot = dsymptr(s, ot, s, ot+2*(widthptr+2*widthint));
 		n = t->thistuple + t->intuple;
-		ot = duint32(s, ot, n);
-		ot = duint32(s, ot, n);
-		ot = dsymptr(s, ot, s, ot+1*(widthptr+2*4)+n*widthptr);
-		ot = duint32(s, ot, t->outtuple);
-		ot = duint32(s, ot, t->outtuple);
+		ot = duintxx(s, ot, n, widthint);
+		ot = duintxx(s, ot, n, widthint);
+		ot = dsymptr(s, ot, s, ot+1*(widthptr+2*widthint)+n*widthptr);
+		ot = duintxx(s, ot, t->outtuple, widthint);
+		ot = duintxx(s, ot, t->outtuple, widthint);
 
 		// slice data
 		for(t1=getthisx(t)->type; t1; t1=t1->down, n++)
@@ -793,9 +834,9 @@ ok:
 		// ../../pkg/runtime/type.go:/InterfaceType
 		ot = dcommontype(s, ot, t);
 		xt = ot - 2*widthptr;
-		ot = dsymptr(s, ot, s, ot+widthptr+2*4);
-		ot = duint32(s, ot, n);
-		ot = duint32(s, ot, n);
+		ot = dsymptr(s, ot, s, ot+widthptr+2*widthint);
+		ot = duintxx(s, ot, n, widthint);
+		ot = duintxx(s, ot, n, widthint);
 		for(a=m; a; a=a->link) {
 			// ../../pkg/runtime/type.go:/imethod
 			ot = dgostringptr(s, ot, a->name);
@@ -838,9 +879,9 @@ ok:
 		}
 		ot = dcommontype(s, ot, t);
 		xt = ot - 2*widthptr;
-		ot = dsymptr(s, ot, s, ot+widthptr+2*4);
-		ot = duint32(s, ot, n);
-		ot = duint32(s, ot, n);
+		ot = dsymptr(s, ot, s, ot+widthptr+2*widthint);
+		ot = duintxx(s, ot, n, widthint);
+		ot = duintxx(s, ot, n, widthint);
 		for(t1=t->type; t1!=T; t1=t1->down) {
 			// ../../pkg/runtime/type.go:/structField
 			if(t1->sym && !t1->embedded) {
@@ -851,7 +892,10 @@ ok:
 					ot = dgopkgpath(s, ot, t1->sym->pkg);
 			} else {
 				ot = dgostringptr(s, ot, nil);
-				ot = dgostringptr(s, ot, nil);
+				if(t1->type->sym != S && t1->type->sym->pkg == builtinpkg)
+					ot = dgopkgpath(s, ot, localpkg);
+				else
+					ot = dgostringptr(s, ot, nil);
 			}
 			ot = dsymptr(s, ot, dtypesym(t1->type), 0);
 			ot = dgostrlitptr(s, ot, t1->note);
@@ -860,7 +904,24 @@ ok:
 		break;
 	}
 	ot = dextratype(s, ot, t, xt);
-	ggloblsym(s, ot, dupok);
+	ggloblsym(s, ot, dupok, 1);
+
+	// generate typelink.foo pointing at s = type.foo.
+	// The linker will leave a table of all the typelinks for
+	// types in the binary, so reflect can find them.
+	// We only need the link for unnamed composites that
+	// we want be able to find.
+	if(t->sym == S) {
+		switch(t->etype) {
+		case TARRAY:
+		case TCHAN:
+		case TMAP:
+			slink = typelinksym(t);
+			dsymptr(slink, 0, s, 0);
+			ggloblsym(slink, widthptr, dupok, 1);
+		}
+	}
+
 	return s;
 }
 
@@ -919,6 +980,8 @@ dumptypestructs(void)
 
 		// add paths for runtime and main, which 6l imports implicitly.
 		dimportpath(runtimepkg);
+		if(flag_race)
+			dimportpath(racepkg);
 		dimportpath(mkpkg(strlit("main")));
 	}
 }
@@ -958,7 +1021,218 @@ dalgsym(Type *t)
 		break;
 	}
 
-	ggloblsym(s, ot, 1);
+	ggloblsym(s, ot, 1, 1);
 	return s;
 }
 
+static int
+gcinline(Type *t) {
+	switch(t->etype) {
+	case TARRAY:
+		if(t->bound == 1)
+			return 1;
+		if(t->width <= 4*widthptr)
+			return 1;
+		break;
+	}
+	return 0;
+}
+
+static int
+dgcsym1(Sym *s, int ot, Type *t, vlong *off, int stack_size)
+{
+	Type *t1;
+	vlong o, off2, fieldoffset, i;
+
+	if(t->align > 0 && (*off % t->align) != 0)
+		fatal("dgcsym1: invalid initial alignment, %T", t);
+
+	if(t->width == BADWIDTH)
+		dowidth(t);
+	
+	switch(t->etype) {
+	case TINT8:
+	case TUINT8:
+	case TINT16:
+	case TUINT16:
+	case TINT32:
+	case TUINT32:
+	case TINT64:
+	case TUINT64:
+	case TINT:
+	case TUINT:
+	case TUINTPTR:
+	case TBOOL:
+	case TFLOAT32:
+	case TFLOAT64:
+	case TCOMPLEX64:
+	case TCOMPLEX128:
+		*off += t->width;
+		break;
+
+	case TPTR32:
+	case TPTR64:
+		// NOTE: Any changes here need to be made to reflect.PtrTo as well.
+		if(*off % widthptr != 0)
+			fatal("dgcsym1: invalid alignment, %T", t);
+		if(!haspointers(t->type) || t->type->etype == TUINT8) {
+			ot = duintptr(s, ot, GC_APTR);
+			ot = duintptr(s, ot, *off);
+		} else {
+			ot = duintptr(s, ot, GC_PTR);
+			ot = duintptr(s, ot, *off);
+			ot = dsymptr(s, ot, dgcsym(t->type), 0);
+		}
+		*off += t->width;
+		break;
+
+	case TUNSAFEPTR:
+	case TFUNC:
+		if(*off % widthptr != 0)
+			fatal("dgcsym1: invalid alignment, %T", t);
+		ot = duintptr(s, ot, GC_APTR);
+		ot = duintptr(s, ot, *off);
+		*off += t->width;
+		break;
+
+	// struct Hchan*
+	case TCHAN:
+		// NOTE: Any changes here need to be made to reflect.ChanOf as well.
+		if(*off % widthptr != 0)
+			fatal("dgcsym1: invalid alignment, %T", t);
+		ot = duintptr(s, ot, GC_CHAN_PTR);
+		ot = duintptr(s, ot, *off);
+		ot = dsymptr(s, ot, dtypesym(t), 0);
+		*off += t->width;
+		break;
+
+	// struct Hmap*
+	case TMAP:
+		// NOTE: Any changes here need to be made to reflect.MapOf as well.
+		if(*off % widthptr != 0)
+			fatal("dgcsym1: invalid alignment, %T", t);
+		ot = duintptr(s, ot, GC_MAP_PTR);
+		ot = duintptr(s, ot, *off);
+		ot = dsymptr(s, ot, dtypesym(t), 0);
+		*off += t->width;
+		break;
+
+	// struct { byte *str; int32 len; }
+	case TSTRING:
+		if(*off % widthptr != 0)
+			fatal("dgcsym1: invalid alignment, %T", t);
+		ot = duintptr(s, ot, GC_STRING);
+		ot = duintptr(s, ot, *off);
+		*off += t->width;
+		break;
+
+	// struct { Itab* tab;  void* data; }
+	// struct { Type* type; void* data; }	// When isnilinter(t)==true
+	case TINTER:
+		if(*off % widthptr != 0)
+			fatal("dgcsym1: invalid alignment, %T", t);
+		if(isnilinter(t)) {
+			ot = duintptr(s, ot, GC_EFACE);
+			ot = duintptr(s, ot, *off);
+		} else {
+			ot = duintptr(s, ot, GC_IFACE);
+			ot = duintptr(s, ot, *off);
+		}
+		*off += t->width;
+		break;
+
+	case TARRAY:
+		if(t->bound < -1)
+			fatal("dgcsym1: invalid bound, %T", t);
+		if(t->type->width == BADWIDTH)
+			dowidth(t->type);
+		if(isslice(t)) {
+			// NOTE: Any changes here need to be made to reflect.SliceOf as well.
+			// struct { byte* array; uint32 len; uint32 cap; }
+			if(*off % widthptr != 0)
+				fatal("dgcsym1: invalid alignment, %T", t);
+			if(t->type->width != 0) {
+				ot = duintptr(s, ot, GC_SLICE);
+				ot = duintptr(s, ot, *off);
+				ot = dsymptr(s, ot, dgcsym(t->type), 0);
+			} else {
+				ot = duintptr(s, ot, GC_APTR);
+				ot = duintptr(s, ot, *off);
+			}
+			*off += t->width;
+		} else {
+			// NOTE: Any changes here need to be made to reflect.ArrayOf as well,
+			// at least once ArrayOf's gc info is implemented and ArrayOf is exported.
+			// struct { byte* array; uint32 len; uint32 cap; }
+			if(t->bound < 1 || !haspointers(t->type)) {
+				*off += t->width;
+			} else if(gcinline(t)) {
+				for(i=0; i<t->bound; i++)
+					ot = dgcsym1(s, ot, t->type, off, stack_size);  // recursive call of dgcsym1
+			} else {
+				if(stack_size < GC_STACK_CAPACITY) {
+					ot = duintptr(s, ot, GC_ARRAY_START);  // a stack push during GC
+					ot = duintptr(s, ot, *off);
+					ot = duintptr(s, ot, t->bound);
+					ot = duintptr(s, ot, t->type->width);
+					off2 = 0;
+					ot = dgcsym1(s, ot, t->type, &off2, stack_size+1);  // recursive call of dgcsym1
+					ot = duintptr(s, ot, GC_ARRAY_NEXT);  // a stack pop during GC
+				} else {
+					ot = duintptr(s, ot, GC_REGION);
+					ot = duintptr(s, ot, *off);
+					ot = duintptr(s, ot, t->width);
+					ot = dsymptr(s, ot, dgcsym(t), 0);
+				}
+				*off += t->width;
+			}
+		}
+		break;
+
+	case TSTRUCT:
+		o = 0;
+		for(t1=t->type; t1!=T; t1=t1->down) {
+			fieldoffset = t1->width;
+			*off += fieldoffset - o;
+			ot = dgcsym1(s, ot, t1->type, off, stack_size);  // recursive call of dgcsym1
+			o = fieldoffset + t1->type->width;
+		}
+		*off += t->width - o;
+		break;
+
+	default:
+		fatal("dgcsym1: unexpected type %T", t);
+	}
+
+	return ot;
+}
+
+static Sym*
+dgcsym(Type *t)
+{
+	int ot;
+	vlong off;
+	Sym *s;
+
+	s = typesymprefix(".gc", t);
+	if(s->flags & SymGcgen)
+		return s;
+	s->flags |= SymGcgen;
+
+	if(t->width == BADWIDTH)
+		dowidth(t);
+
+	ot = 0;
+	off = 0;
+	ot = duintptr(s, ot, t->width);
+	ot = dgcsym1(s, ot, t, &off, 0);
+	ot = duintptr(s, ot, GC_END);
+	ggloblsym(s, ot, 1, 1);
+
+	if(t->align > 0)
+		off = rnd(off, t->align);
+	if(off != t->width)
+		fatal("dgcsym: off=%lld, size=%lld, type %T", off, t->width, t);
+
+	return s;
+}

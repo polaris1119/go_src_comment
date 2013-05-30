@@ -3,17 +3,22 @@
 // license that can be found in the LICENSE file.
 
 // Plan 9-specific system calls
-int32	runtime·open(uint8 *file, int32 mode);
 int32	runtime·pread(int32 fd, void *buf, int32 nbytes, int64 offset);
 int32	runtime·pwrite(int32 fd, void *buf, int32 nbytes, int64 offset);
-int32	runtime·read(int32 fd, void *buf, int32 nbytes);
-int32	runtime·close(int32 fd);
+int64	runtime·seek(int32 fd, int64 offset, int32 whence);
 void	runtime·exits(int8* msg);
-int32	runtime·brk_(void*);
+intptr	runtime·brk_(void*);
 int32	runtime·sleep(int32 ms);
-int32	runtime·rfork(int32 flags, void *stk, M *m, G *g, void (*fn)(void));
+int32	runtime·rfork(int32 flags, void *stk, M *mp, G *gp, void (*fn)(void));
 int32	runtime·plan9_semacquire(uint32 *addr, int32 block);
+int32	runtime·plan9_tsemacquire(uint32 *addr, int32 ms);
 int32 	runtime·plan9_semrelease(uint32 *addr, int32 count);
+int32	runtime·notify(void (*fn)(void*, int8*));
+int32	runtime·noted(int32);
+void	runtime·sigtramp(void*, int8*);
+void	runtime·sigpanic(void);
+void	runtime·goexitsall(int8*);
+void	runtime·setfpmasks(void);
 
 /* open */
 enum
@@ -45,6 +50,13 @@ enum
 	RFNOMNT         = (1<<14)
 };
 
+/* notify */
+enum
+{
+	NCONT	= 0,
+	NDFLT	= 1
+};
+
 typedef struct Tos Tos;
 typedef intptr Plink;
 
@@ -66,4 +78,5 @@ struct Tos {
 	/* top of stack is here */
 };
 
-#define	NSIG 1
+#define	NSIG	5	/* number of signals in runtime·SigTab array */
+#define	ERRMAX	128	/* max length of note string */

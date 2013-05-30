@@ -11,10 +11,10 @@ package time
 #include "os_GOOS.h"
 #include "arch_GOARCH.h"
 #include "malloc.h"
+#include "race.h"
 
 static Timers timers;
 static void addtimer(Timer*);
-static bool deltimer(Timer*);
 
 // Package time APIs.
 // Godoc uses the comments in package time, not these.
@@ -23,20 +23,20 @@ static bool deltimer(Timer*);
 
 // Sleep puts the current goroutine to sleep for at least ns nanoseconds.
 func Sleep(ns int64) {
-	g->status = Gwaiting;
-	g->waitreason = "sleep";
-	runtime·tsleep(ns);
+	runtime·tsleep(ns, "sleep");
 }
 
 // startTimer adds t to the timer heap.
 func startTimer(t *Timer) {
-	addtimer(t);
+	if(raceenabled)
+		runtime·racerelease(t);
+	runtime·addtimer(t);
 }
 
 // stopTimer removes t from the timer heap if it is there.
 // It returns true if t was removed, false if t wasn't even there.
 func stopTimer(t *Timer) (stopped bool) {
-	stopped = deltimer(t);
+	stopped = runtime·deltimer(t);
 }
 
 // C runtime.
@@ -54,25 +54,34 @@ ready(int64 now, Eface e)
 	runtime·ready(e.data);
 }
 
+static FuncVal readyv = {(void(*)(void))ready};
+
 // Put the current goroutine to sleep for ns nanoseconds.
-// The caller must have set g->status and g->waitreason.
 void
-runtime·tsleep(int64 ns)
+runtime·tsleep(int64 ns, int8 *reason)
 {
 	Timer t;
 
-	if(ns <= 0) {
-		g->status = Grunning;
-		g->waitreason = nil;
+	if(ns <= 0)
 		return;
-	}
 
 	t.when = runtime·nanotime() + ns;
 	t.period = 0;
-	t.f = ready;
+	t.fv = &readyv;
 	t.arg.data = g;
+	runtime·lock(&timers);
 	addtimer(&t);
-	runtime·gosched();
+	runtime·park(runtime·unlock, &timers, reason);
+}
+
+static FuncVal timerprocv = {timerproc};
+
+void
+runtime·addtimer(Timer *t)
+{
+	runtime·lock(&timers);
+	addtimer(t);
+	runtime·unlock(&timers);
 }
 
 // Add a timer to the heap and start or kick the timer proc
@@ -83,7 +92,6 @@ addtimer(Timer *t)
 	int32 n;
 	Timer **nt;
 
-	runtime·lock(&timers);
 	if(timers.len >= timers.cap) {
 		// Grow slice.
 		n = 16;
@@ -109,16 +117,17 @@ addtimer(Timer *t)
 			runtime·ready(timers.timerproc);
 		}
 	}
-	if(timers.timerproc == nil)
-		timers.timerproc = runtime·newproc1((byte*)timerproc, nil, 0, 0, addtimer);
-	runtime·unlock(&timers);
+	if(timers.timerproc == nil) {
+		timers.timerproc = runtime·newproc1(&timerprocv, nil, 0, 0, addtimer);
+		timers.timerproc->issystem = true;
+	}
 }
 
 // Delete timer t from the heap.
 // Do not need to update the timerproc:
 // if it wakes up early, no big deal.
-static bool
-deltimer(Timer *t)
+bool
+runtime·deltimer(Timer *t)
 {
 	int32 i;
 
@@ -182,26 +191,25 @@ timerproc(void)
 				siftdown(0);
 				t->i = -1;  // mark as removed
 			}
-			f = t->f;
+			f = (void*)t->fv->fn;
 			arg = t->arg;
 			runtime·unlock(&timers);
+			if(raceenabled)
+				runtime·raceacquire(t);
 			f(now, arg);
 			runtime·lock(&timers);
 		}
 		if(delta < 0) {
 			// No timers left - put goroutine to sleep.
 			timers.rescheduling = true;
-			g->status = Gwaiting;
-			g->waitreason = "timer goroutine (idle)";
-			runtime·unlock(&timers);
-			runtime·gosched();
+			runtime·park(runtime·unlock, &timers, "timer goroutine (idle)");
 			continue;
 		}
 		// At least one timer pending.  Sleep until then.
 		timers.sleeping = true;
 		runtime·noteclear(&timers.waitnote);
 		runtime·unlock(&timers);
-		runtime·entersyscall();
+		runtime·entersyscallblock();
 		runtime·notetsleep(&timers.waitnote, delta);
 		runtime·exitsyscall();
 	}

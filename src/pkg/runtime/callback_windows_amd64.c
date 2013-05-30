@@ -4,6 +4,7 @@
 
 #include "runtime.h"
 #include "type.h"
+#include "typekind.h"
 #include "defs_GOOS_GOARCH.h"
 #include "os_GOOS.h"
 
@@ -77,7 +78,7 @@ runtime·compilecallback(Eface fn, bool /*cleanstack*/)
 	// MOVQ fn, AX
 	*p++ = 0x48;
 	*p++ = 0xb8;
-	*(uint64*)p = (uint64)fn.data;
+	*(uint64*)p = (uint64)(fn.data);
 	p += 8;
 	// PUSH AX
 	*p++ = 0x50;

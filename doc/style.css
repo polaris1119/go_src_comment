@@ -12,7 +12,7 @@ pre {
 	line-height: 18px;
 }
 pre .comment {
-	color: #375EAB;
+	color: #006600;
 }
 pre .highlight,
 pre .highlight-comment,
@@ -130,22 +130,25 @@ div#heading a {
 div#topbar {
 	background: #E0EBF5;
 	height: 64px;
+	overflow: hidden;
 }
 
 body {
 	text-align: center;
 }
-div#page,
+div#page {
+	width: 100%;
+}
+div#page > .container,
 div#topbar > .container {
-	clear: both;
 	text-align: left;
 	margin-left: auto;
 	margin-right: auto;
 	padding: 0 20px;
 	width: 900px;
 }
-div#page.wide,
-div#topbar > .wide {
+div#page.wide > .container,
+div#topbar.wide > .container {
 	width: auto;
 }
 div#plusone {
@@ -153,6 +156,7 @@ div#plusone {
 }
 
 div#footer {
+	text-align: center;
 	color: #666;
 	font-size: 14px;
 	margin: 40px 0;
@@ -161,6 +165,7 @@ div#footer {
 div#menu > a,
 div#menu > input,
 div#learn .buttons a,
+div.play .buttons a,
 div#blog .read a {
 	padding: 10px;
 
@@ -171,20 +176,30 @@ div#blog .read a {
 	-moz-border-radius: 5px;
 	border-radius: 5px;
 }
+div#playground .buttons a,
 div#menu > a,
 div#menu > input {
 	border: 1px solid #375EAB;
 }
+div#playground .buttons a,
 div#menu > a {
 	color: white;
 	background: #375EAB;
 }
+#playgroundButton.active {
+	background: white;
+	color: #375EAB;
+}
 a#start,
 div#learn .buttons a,
+div.play .buttons a,
 div#blog .read a {
 	color: #222;
 	border: 1px solid #375EAB;
 	background: #E0EBF5;
+}
+.download {
+	width: 150px;
 }
 
 div#menu {
@@ -212,9 +227,11 @@ div#menu > input.inactive {
 
 div.left {
 	float: left;
+	clear: left;
 }
 div.right {
 	float: right;
+	clear: right;
 }
 div.left,
 div.right {
@@ -253,10 +270,12 @@ a#start {
 	border-radius: 5px;
 }
 a#start .big {
+	display: block;
 	font-weight: bold;
 	font-size: 20px;
 }
 a#start .desc {
+	display: block;
 	font-size: 14px;
 	font-weight: normal;
 	margin-top: 5px;
@@ -340,6 +359,9 @@ div#learn .toys select {
 	border: 1px solid #375EAB;
 	margin: 0;
 }
+div#learn .output .exit {
+	display: none;
+}
 
 div#blog,
 div#video {
@@ -391,3 +413,120 @@ img.gopher {
 	margin-bottom: -120px;
 }
 h2 { clear: right; }
+
+/* example and drop-down playground */
+div.play {
+	padding: 0 20px 40px 20px;
+}
+div.play pre,
+div.play textarea,
+div.play .lines {
+	padding: 0;
+	margin: 0;
+	font-family: Menlo, monospace;
+	font-size: 14px;
+}
+div.play .input {
+	padding: 10px;
+	margin-top: 10px;
+
+	-webkit-border-top-left-radius: 5px;
+	-webkit-border-top-right-radius: 5px;
+	-moz-border-radius-topleft: 5px;
+	-moz-border-radius-topright: 5px;
+	border-top-left-radius: 5px;
+	border-top-right-radius: 5px;
+
+	overflow: hidden;
+}
+div.play .input textarea {
+	width: 100%;
+	height: 100%;
+	border: none;
+	outline: none;
+	resize: none;
+
+	overflow: hidden;
+}
+div#playground .input textarea {
+	overflow: auto;
+	resize: auto;
+}
+div.play .output {
+	border-top: none !important;
+
+	padding: 10px;
+	max-height: 200px;
+	overflow: auto;
+
+	-webkit-border-bottom-right-radius: 5px;
+	-webkit-border-bottom-left-radius: 5px;
+	-moz-border-radius-bottomright: 5px;
+	-moz-border-radius-bottomleft: 5px;
+	border-bottom-right-radius: 5px;
+	border-bottom-left-radius: 5px;
+}
+div.play .output pre {
+	padding: 0;
+
+	-webkit-border-radius: 0;
+	-moz-border-radius: 0;
+	border-radius: 0;
+}
+div.play .input,
+div.play .input textarea,
+div.play .output,
+div.play .output pre {
+	background: #FFFFD8;
+}
+div.play .input,
+div.play .output {
+	border: 1px solid #375EAB;
+}
+div.play .buttons {
+	float: right;
+	padding: 20px 0 10px 0;
+	text-align: right;
+}
+div.play .buttons a {
+	height: 16px;
+	margin-left: 5px;
+	padding: 10px;
+	cursor: pointer;
+}
+div.play .output .exit {
+	color: #999;
+}
+
+/* drop-down playground */
+#playgroundButton,
+div#playground {
+	/* start hidden; revealed by javascript */
+	display: none;
+}
+div#playground {
+	position: absolute;
+	top: 63px;
+	right: 20px;
+	padding: 0 10px 10px 10px;
+	z-index: 1;
+	text-align: left;
+	background: #E0EBF5;
+
+	border: 1px solid #B0BBC5;
+	border-top: none;
+
+	-webkit-border-bottom-left-radius: 5px;
+	-webkit-border-bottom-right-radius: 5px;
+	-moz-border-radius-bottomleft: 5px;
+	-moz-border-radius-bottomright: 5px;
+	border-bottom-left-radius: 5px;
+	border-bottom-right-radius: 5px;
+}
+div#playground .code {
+	width: 520px;
+	height: 200px;
+}
+div#playground .output {
+	height: 100px;
+}

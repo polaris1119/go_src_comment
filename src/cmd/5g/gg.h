@@ -15,32 +15,36 @@ struct	Addr
 {
 	int32	offset;
 	int32	offset2;
-	double	dval;
-	Prog*	branch;
-	char	sval[NSNAME];
+
+	union {
+		double	dval;
+		vlong	vval;
+		Prog*	branch;
+		char	sval[NSNAME];
+	} u;
 
 	Sym*	sym;
+	Sym*	gotype;
 	Node*	node;
 	int	width;
 	uchar	type;
 	char	name;
 	uchar	reg;
-	char pun;
 	uchar	etype;
 };
 #define	A	((Addr*)0)
 
 struct	Prog
 {
-	short	as;		// opcode
 	uint32	loc;		// pc offset in this func
 	uint32	lineno;		// source line that generated this
-	Addr	from;		// src address
-	Addr	to;		// dst address
 	Prog*	link;		// next instruction in this func
 	void*	regp;		// points to enclosing Reg struct
+	short	as;		// opcode
 	uchar	reg;		// doubles as width in DATA op
 	uchar	scond;
+	Addr	from;		// src address
+	Addr	to;		// dst address
 };
 
 #define TEXTFLAG reg
@@ -78,22 +82,20 @@ void	cgen_callinter(Node*, Node*, int);
 void	cgen_proc(Node*, int);
 void	cgen_callret(Node*, Node*);
 void	cgen_dcl(Node*);
-int	cgen_inline(Node*, Node*);
 int	needconvert(Type*, Type*);
 void	genconv(Type*, Type*);
 void	allocparams(void);
-void	checklabels();
+void	checklabels(void);
 void	ginscall(Node*, int);
 
 /*
  * cgen
  */
 void	agen(Node*, Node*);
-Prog* cgenindex(Node *, Node *);
+Prog* cgenindex(Node *, Node *, int);
 void	igen(Node*, Node*, Node*);
 void agenr(Node *n, Node *a, Node *res);
 vlong	fieldoffset(Type*, Node*);
-void	bgen(Node*, int, Prog*);
 void	sgen(Node*, Node*, int64);
 void	gmove(Node*, Node*);
 Prog*	gins(int, Node*, Node*);
@@ -104,12 +106,14 @@ Prog*	gshift(int as, Node *lhs, int32 stype, int32 sval, Node *rhs);
 Prog *	gregshift(int as, Node *lhs, int32 stype, Node *reg, Node *rhs);
 void	naddr(Node*, Addr*, int);
 void	cgen_aret(Node*, Node*);
-void	cgen_shift(int, Node*, Node*, Node*);
+void	cgen_hmul(Node*, Node*, Node*);
+void	cgen_shift(int, int, Node*, Node*, Node*);
+int	componentgen(Node*, Node*);
 
 /*
  * cgen64.c
  */
-void	cmp64(Node*, Node*, int, Prog*);
+void	cmp64(Node*, Node*, int, int, Prog*);
 void	cgen64(Node*, Node*);
 
 /*
@@ -117,16 +121,13 @@ void	cgen64(Node*, Node*);
  */
 void	clearp(Prog*);
 void	proglist(void);
-Prog*	gbranch(int, Type*);
+Prog*	gbranch(int, Type*, int);
 Prog*	prog(int);
-void	gaddoffset(Node*);
 void	gconv(int, int);
 int	conv2pt(Type*);
 vlong	convvtox(vlong, int);
 void	fnparam(Type*, int, int);
 Prog*	gop(int, Node*, Node*, Node*);
-void	setconst(Addr*, vlong);
-void	setaddr(Addr*, Node*);
 int	optoas(int, Type*);
 void	ginit(void);
 void	gclean(void);
@@ -141,11 +142,12 @@ int	isfat(Type*);
 int	dotaddable(Node*, Node*);
 void	sudoclean(void);
 int	sudoaddable(int, Node*, Addr*, int*);
-void	afunclit(Addr*);
+void	afunclit(Addr*, Node*);
 void	datagostring(Strlit*, Addr*);
 void	split64(Node*, Node*, Node*);
 void	splitclean(void);
 Node*	ncon(uint32 i);
+void	gtrack(Sym*);
 
 /*
  * obj.c
@@ -164,7 +166,7 @@ int	Rconv(Fmt*);
 int	Yconv(Fmt*);
 void	listinit(void);
 
-void	zaddr(Biobuf*, Addr*, int);
+void	zaddr(Biobuf*, Addr*, int, int);
 
 #pragma	varargck	type	"D"	Addr*
 #pragma	varargck	type	"M"	Addr*

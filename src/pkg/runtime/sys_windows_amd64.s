@@ -272,13 +272,13 @@ TEXT runtime·callbackasm(SB),7,$0
 	MOVQ	R15, 0(SP)
 
 	// prepare call stack.  use SUBQ to hide from stack frame checks
-	// cgocallback(void (*fn)(void*), void *frame, uintptr framesize)
+	// cgocallback(Go func, void *frame, uintptr framesize)
 	SUBQ	$24, SP
 	MOVQ	DX, 16(SP)	// uintptr framesize
 	MOVQ	CX, 8(SP)   // void *frame
-	MOVQ	AX, 0(SP)    // void (*fn)(void*)
+	MOVQ	AX, 0(SP)    // Go func
 	CLD
-	CALL  runtime·cgocallback(SB)
+	CALL  runtime·cgocallback_gofunc(SB)
 	MOVQ	0(SP), AX
 	MOVQ	8(SP), CX
 	MOVQ	16(SP), DX
@@ -328,7 +328,6 @@ TEXT runtime·tstart_stdcall(SB),7,$0
 	// Someday the convention will be D is always cleared.
 	CLD
 
-	CALL	runtime·setstacklimits(SB)
 	CALL	runtime·stackcheck(SB)	// clobbers AX,CX
 	CALL	runtime·mstart(SB)
 
@@ -337,6 +336,45 @@ TEXT runtime·tstart_stdcall(SB),7,$0
 
 // set tls base to DI
 TEXT runtime·settls(SB),7,$0
-	CALL	runtime·setstacklimits(SB)
 	MOVQ	DI, 0x28(GS)
+	RET
+
+// void install_exception_handler()
+TEXT runtime·install_exception_handler(SB),7,$0
+	CALL	runtime·setstacklimits(SB)
+	RET
+
+TEXT runtime·remove_exception_handler(SB),7,$0
+	RET
+
+TEXT runtime·osyield(SB),7,$8
+	// Tried NtYieldExecution but it doesn't yield hard enough.
+	// NtWaitForSingleObject being used here as Sleep(0).
+	// The CALL is safe because NtXxx is a system call wrapper:
+	// it puts the right system call number in AX, then does
+	// a SYSENTER and a RET.
+	MOVQ	runtime·NtWaitForSingleObject(SB), AX
+	MOVQ	$1, BX
+	NEGQ	BX
+	MOVQ	SP, R8 // ptime
+	MOVQ	BX, (R8)
+	MOVQ	$-1, CX // handle
+	MOVQ	$0, DX // alertable
+	CALL	AX
+	RET
+
+TEXT runtime·usleep(SB),7,$8
+	// The CALL is safe because NtXxx is a system call wrapper:
+	// it puts the right system call number in AX, then does
+	// a SYSENTER and a RET.
+	MOVQ	runtime·NtWaitForSingleObject(SB), AX
+	// Have 1us units; want negative 100ns units.
+	MOVL	usec+0(FP), BX
+	IMULQ	$10, BX
+	NEGQ	BX
+	MOVQ	SP, R8 // ptime
+	MOVQ	BX, (R8)
+	MOVQ	$-1, CX // handle
+	MOVQ	$0, DX // alertable
+	CALL	AX
 	RET

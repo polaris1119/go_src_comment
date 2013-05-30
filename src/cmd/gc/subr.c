@@ -142,18 +142,32 @@ yyerror(char *fmt, ...)
 		if(debug['x'])	
 			print("yyerror: yystate=%d yychar=%d\n", yystate, yychar);
 
+		// An unexpected EOF caused a syntax error. Use the previous
+		// line number since getc generated a fake newline character.
+		if(curio.eofnl)
+			lexlineno = prevlineno;
+
 		// only one syntax error per line
 		if(lastsyntax == lexlineno)
 			return;
 		lastsyntax = lexlineno;
-		
-		if(strstr(fmt, "{ or {")) {
+			
+		if(strstr(fmt, "{ or {") || strstr(fmt, " or ?") || strstr(fmt, " or @")) {
 			// The grammar has { and LBRACE but both show up as {.
 			// Rewrite syntax error referring to "{ or {" to say just "{".
 			strecpy(buf, buf+sizeof buf, fmt);
 			p = strstr(buf, "{ or {");
 			if(p)
 				memmove(p+1, p+6, strlen(p+6)+1);
+			
+			// The grammar has ? and @ but only for reading imports.
+			// Silence them in ordinary errors.
+			p = strstr(buf, " or ?");
+			if(p)
+				memmove(p, p+5, strlen(p+5)+1);
+			p = strstr(buf, " or @");
+			if(p)
+				memmove(p, p+5, strlen(p+5)+1);
 			fmt = buf;
 		}
 		
@@ -214,6 +228,8 @@ warnl(int line, char *fmt, ...)
 	va_start(arg, fmt);
 	adderr(line, fmt, arg);
 	va_end(arg);
+	if(debug['m'])
+		flusherrors();
 }
 
 void
@@ -377,6 +393,7 @@ importdot(Pkg *opkg, Node *pack)
 	Sym *s, *s1;
 	uint32 h;
 	int n;
+	char *pkgerror;
 
 	n = 0;
 	for(h=0; h<NHASH; h++) {
@@ -389,12 +406,14 @@ importdot(Pkg *opkg, Node *pack)
 				continue;
 			s1 = lookup(s->name);
 			if(s1->def != N) {
-				redeclare(s1, "during import");
+				pkgerror = smprint("during import \"%Z\"", opkg->path);
+				redeclare(s1, pkgerror);
 				continue;
 			}
 			s1->def = s->def;
 			s1->block = s->block;
 			s1->def->pack = pack;
+			s1->origpkg = opkg;
 			n++;
 		}
 	}
@@ -494,6 +513,31 @@ nod(int op, Node *nleft, Node *nright)
 	return n;
 }
 
+void
+saveorignode(Node *n)
+{
+	Node *norig;
+
+	if(n->orig != N)
+		return;
+	norig = nod(n->op, N, N);
+	*norig = *n;
+	n->orig = norig;
+}
+
+// ispaddedfield returns whether the given field
+// is followed by padding. For the case where t is
+// the last field, total gives the size of the enclosing struct.
+static int
+ispaddedfield(Type *t, vlong total)
+{
+	if(t->etype != TFIELD)
+		fatal("ispaddedfield called non-field %T", t);
+	if(t->down == T)
+		return t->width + t->type->width != total;
+	return t->width + t->type->width != t->down->width;
+}
+
 int
 algtype1(Type *t, Type **bad)
 {
@@ -504,6 +548,12 @@ algtype1(Type *t, Type **bad)
 		*bad = T;
 
 	switch(t->etype) {
+	case TANY:
+	case TFORW:
+		// will be defined later.
+		*bad = t;
+		return -1;
+
 	case TINT8:
 	case TUINT8:
 	case TINT16:
@@ -571,8 +621,12 @@ algtype1(Type *t, Type **bad)
 		}
 		ret = AMEM;
 		for(t1=t->type; t1!=T; t1=t1->down) {
-			if(isblanksym(t1->sym))
+			// Blank fields and padding must be ignored,
+			// so need special compare.
+			if(isblanksym(t1->sym) || ispaddedfield(t1, t->width)) {
+				ret = -1;
 				continue;
+			}
 			a = algtype1(t1->type, bad);
 			if(a == ANOEQ)
 				return ANOEQ;  // not comparable
@@ -617,11 +671,14 @@ Type*
 maptype(Type *key, Type *val)
 {
 	Type *t;
+	Type *bad;
+	int atype;
 
 	if(key != nil) {
-		switch(key->etype) {
+		atype = algtype1(key, &bad);
+		switch(bad == T ? key->etype : bad->etype) {
 		default:
-			if(algtype1(key, nil) == ANOEQ)
+			if(atype == ANOEQ)
 				yyerror("invalid map key type %T", key);
 			break;
 		case TANY:
@@ -666,6 +723,12 @@ methcmp(const void *va, const void *vb)
 	
 	a = *(Type**)va;
 	b = *(Type**)vb;
+	if(a->sym == S && b->sym == S)
+		return 0;
+	if(a->sym == S)
+		return -1;
+	if(b->sym == S)
+		return 1;
 	i = strcmp(a->sym->name, b->sym->name);
 	if(i != 0)
 		return i;
@@ -776,7 +839,7 @@ Type*
 aindex(Node *b, Type *t)
 {
 	Type *r;
-	int bound;
+	int64 bound;
 
 	bound = -1;	// open bound
 	typecheck(&b, Erv);
@@ -813,6 +876,7 @@ treecopy(Node *n)
 	default:
 		m = nod(OXXX, N, N);
 		*m = *n;
+		m->orig = m;
 		m->left = treecopy(n->left);
 		m->right = treecopy(n->right);
 		m->list = listtreecopy(n->list);
@@ -1344,7 +1408,7 @@ assignconv(Node *n, Type *t, char *context)
 	Node *r, *old;
 	char *why;
 	
-	if(n == N || n->type == T)
+	if(n == N || n->type == T || n->type->broke)
 		return n;
 
 	old = n;
@@ -1379,7 +1443,7 @@ assignconv(Node *n, Type *t, char *context)
 	r->type = t;
 	r->typecheck = 1;
 	r->implicit = 1;
-	r->orig = n;
+	r->orig = n->orig;
 	return r;
 }
 
@@ -1710,6 +1774,13 @@ ullmancalc(Node *n)
 	case OCALLINTER:
 		ul = UINF;
 		goto out;
+	case OANDAND:
+	case OOROR:
+		// hard with race detector
+		if(flag_race) {
+			ul = UINF;
+			goto out;
+		}
 	}
 	ul = 1;
 	if(n->left != N)
@@ -1723,6 +1794,8 @@ ullmancalc(Node *n)
 		ul = ur;
 
 out:
+	if(ul > 200)
+		ul = 200; // clamp to uchar with room to grow
 	n->ullman = ul;
 }
 
@@ -2030,11 +2103,13 @@ cheapexpr(Node *n, NodeList **init)
 
 /*
  * return n in a local variable of type t if it is not already.
+ * the value is guaranteed not to change except by direct
+ * assignment to it.
  */
 Node*
 localexpr(Node *n, Type *t, NodeList **init)
 {
-	if(n->op == ONAME &&
+	if(n->op == ONAME && !n->addrtaken &&
 		(n->class == PAUTO || n->class == PPARAM || n->class == PPARAMOUT) &&
 		convertop(n->type, t, nil) == OCONVNOP)
 		return n;
@@ -2045,7 +2120,7 @@ localexpr(Node *n, Type *t, NodeList **init)
 void
 setmaxarg(Type *t)
 {
-	int32 w;
+	int64 w;
 
 	dowidth(t);
 	w = t->argwid;
@@ -2509,8 +2584,12 @@ genwrapper(Type *rcvr, Type *method, Sym *newnam, int iface)
 
 	funcbody(fn);
 	curfn = fn;
+	// wrappers where T is anonymous (struct{ NamedType }) can be duplicated.
+	if(rcvr->etype == TSTRUCT || isptr[rcvr->etype] && rcvr->type->etype == TSTRUCT)
+		fn->dupok = 1;
 	typecheck(&fn, Etop);
 	typechecklist(fn->nbody, Etop);
+	inlcalls(fn);
 	curfn = nil;
 	funccompile(fn, 0);
 }
@@ -2592,7 +2671,7 @@ genhash(Sym *sym, Type *t)
 	Node *hashel;
 	Type *first, *t1;
 	int old_safemode;
-	int64 size, mul;
+	int64 size, mul, offend;
 
 	if(debug['r'])
 		print("genhash %S %T\n", sym, t);
@@ -2665,7 +2744,7 @@ genhash(Sym *sym, Type *t)
 		call->list = list(call->list, nh);
 		call->list = list(call->list, nodintconst(t->type->width));
 		nx = nod(OINDEX, np, ni);
-		nx->etype = 1;  // no bounds check
+		nx->bounded = 1;
 		na = nod(OADDR, nx, N);
 		na->etype = 1;  // no escape to heap
 		call->list = list(call->list, na);
@@ -2678,22 +2757,21 @@ genhash(Sym *sym, Type *t)
 		// Walk the struct using memhash for runs of AMEM
 		// and calling specific hash functions for the others.
 		first = T;
+		offend = 0;
 		for(t1=t->type;; t1=t1->down) {
-			if(t1 != T && (isblanksym(t1->sym) || algtype1(t1->type, nil) == AMEM)) {
-				if(first == T && !isblanksym(t1->sym))
+			if(t1 != T && algtype1(t1->type, nil) == AMEM && !isblanksym(t1->sym)) {
+				offend = t1->width + t1->type->width;
+				if(first == T)
 					first = t1;
-				continue;
+				// If it's a memory field but it's padded, stop here.
+				if(ispaddedfield(t1, t->width))
+					t1 = t1->down;
+				else
+					continue;
 			}
 			// Run memhash for fields up to this one.
-			while(first != T && isblanksym(first->sym))
-				first = first->down;
 			if(first != T) {
-				if(first->down == t1)
-					size = first->type->width;
-				else if(t1 == T)
-					size = t->width - first->width;  // first->width is offset
-				else
-					size = t1->width - first->width;  // both are offsets
+				size = offend - first->width; // first->width is offset
 				hashel = hashmem(first->type);
 				// hashel(h, size, &p.first)
 				call = nod(OCALL, hashel, N);
@@ -2709,6 +2787,8 @@ genhash(Sym *sym, Type *t)
 			}
 			if(t1 == T)
 				break;
+			if(isblanksym(t1->sym))
+				continue;
 
 			// Run hash for this field.
 			hashel = hashfor(t1->type);
@@ -2722,6 +2802,8 @@ genhash(Sym *sym, Type *t)
 			call->list = list(call->list, na);
 			fn->nbody = list(fn->nbody, call);
 		}
+		// make sure body is not empty.
+		fn->nbody = list(fn->nbody, nod(ORETURN, N, N));
 		break;
 	}
 
@@ -2823,6 +2905,7 @@ geneq(Sym *sym, Type *t)
 	Type *t1, *first;
 	int old_safemode;
 	int64 size;
+	int64 offend;
 
 	if(debug['r'])
 		print("geneq %S %T\n", sym, t);
@@ -2876,9 +2959,9 @@ geneq(Sym *sym, Type *t)
 		
 		// if p[i] != q[i] { *eq = false; return }
 		nx = nod(OINDEX, np, ni);
-		nx->etype = 1;  // no bounds check
+		nx->bounded = 1;
 		ny = nod(OINDEX, nq, ni);
-		ny->etype = 1;  // no bounds check
+		ny->bounded = 1;
 
 		nif = nod(OIF, N, N);
 		nif->ntest = nod(ONE, nx, ny);
@@ -2894,18 +2977,23 @@ geneq(Sym *sym, Type *t)
 	case TSTRUCT:
 		// Walk the struct using memequal for runs of AMEM
 		// and calling specific equality tests for the others.
+		// Skip blank-named fields.
 		first = T;
+		offend = 0;
 		for(t1=t->type;; t1=t1->down) {
-			if(t1 != T && (isblanksym(t1->sym) || algtype1(t1->type, nil) == AMEM)) {
-				if(first == T && !isblanksym(t1->sym))
+			if(t1 != T && algtype1(t1->type, nil) == AMEM && !isblanksym(t1->sym)) {
+				offend = t1->width + t1->type->width;
+				if(first == T)
 					first = t1;
-				continue;
+				// If it's a memory field but it's padded, stop here.
+				if(ispaddedfield(t1, t->width))
+					t1 = t1->down;
+				else
+					continue;
 			}
 			// Run memequal for fields up to this one.
 			// TODO(rsc): All the calls to newname are wrong for
 			// cross-package unexported fields.
-			while(first != T && isblanksym(first->sym))
-				first = first->down;
 			if(first != T) {
 				if(first->down == t1) {
 					fn->nbody = list(fn->nbody, eqfield(np, nq, newname(first->sym), neq));
@@ -2916,16 +3004,15 @@ geneq(Sym *sym, Type *t)
 						fn->nbody = list(fn->nbody, eqfield(np, nq, newname(first->sym), neq));
 				} else {
 					// More than two fields: use memequal.
-					if(t1 == T)
-						size = t->width - first->width;  // first->width is offset
-					else
-						size = t1->width - first->width;  // both are offsets
+					size = offend - first->width; // first->width is offset
 					fn->nbody = list(fn->nbody, eqmem(np, nq, newname(first->sym), size, neq));
 				}
 				first = T;
 			}
 			if(t1 == T)
 				break;
+			if(isblanksym(t1->sym))
+				continue;
 
 			// Check this field, which is not just memory.
 			fn->nbody = list(fn->nbody, eqfield(np, nq, newname(t1->sym), neq));
@@ -3032,7 +3119,7 @@ implements(Type *t, Type *iface, Type **m, Type **samename, int *ptr)
 	for(im=iface->type; im; im=im->down) {
 		imtype = methodfunc(im->type, 0);
 		tm = ifacelookdot(im->sym, t, &followptr, 0);
-		if(tm == T || !eqtype(methodfunc(tm->type, 0), imtype)) {
+		if(tm == T || tm->nointerface || !eqtype(methodfunc(tm->type, 0), imtype)) {
 			if(tm == T)
 				tm = ifacelookdot(im->sym, t, &followptr, 1);
 			*m = im;
@@ -3211,11 +3298,14 @@ liststmt(NodeList *l)
 int
 count(NodeList *l)
 {
-	int n;
+	vlong n;
 
 	n = 0;
 	for(; l; l=l->next)
 		n++;
+	if((int)n != n) { // Overflow.
+		yyerror("too many elements in list");
+	}
 	return n;
 }
 
@@ -3505,11 +3595,8 @@ umagic(Magic *m)
 Sym*
 ngotype(Node *n)
 {
-	if(n->sym != S && n->realtype != T)
-	if(strncmp(n->sym->name, "autotmp_", 8) != 0)
-	if(strncmp(n->sym->name, "statictmp_", 8) != 0)
-		return typename(n->realtype)->left->sym;
-
+	if(n->type != T)
+		return typenamesym(n->type);
 	return S;
 }
 
@@ -3565,9 +3652,6 @@ mkpkg(Strlit *path)
 	Pkg *p;
 	int h;
 
-	if(isbadimport(path))
-		errorexit();
-	
 	h = stringhash(path->s) & (nelem(phash)-1);
 	for(p=phash[h]; p; p=p->link)
 		if(p->path->len == path->len && memcmp(path->s, p->path->s, path->len) == 0)
@@ -3616,15 +3700,28 @@ addinit(Node **np, NodeList *init)
 	n->ullman = UINF;
 }
 
+static char* reservedimports[] = {
+	"go",
+	"type",
+};
+
 int
 isbadimport(Strlit *path)
 {
+	int i;
 	char *s;
 	Rune r;
 
 	if(strlen(path->s) != path->len) {
 		yyerror("import path contains NUL");
 		return 1;
+	}
+	
+	for(i=0; i<nelem(reservedimports); i++) {
+		if(strcmp(path->s, reservedimports[i]) == 0) {
+			yyerror("import path \"%s\" is reserved and cannot be used", path->s);
+			return 1;
+		}
 	}
 
 	s = path->s;
@@ -3652,4 +3749,18 @@ isbadimport(Strlit *path)
 		}
 	}
 	return 0;
+}
+
+void
+checknotnil(Node *x, NodeList **init)
+{
+	Node *n;
+	
+	if(isinter(x->type)) {
+		x = nod(OITAB, x, N);
+		typecheck(&x, Erv);
+	}
+	n = nod(OCHECKNOTNIL, x, N);
+	n->typecheck = 1;
+	*init = list(*init, n);
 }

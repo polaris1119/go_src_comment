@@ -2,13 +2,15 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build ignore
+
 /*
 
 8a is a version of the Plan 9 assembler.  The original is documented at
 
-	http://plan9.bell-labs.com/magic/man2html/1/2a
+	http://plan9.bell-labs.com/magic/man2html/1/8a
 
 Its target architecture is the x86, referred to by these tools for historical reasons as 386.
 
 */
-package documentation
+package main

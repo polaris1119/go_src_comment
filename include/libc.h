@@ -85,16 +85,12 @@ extern	char*	p9getenv(char*);
 extern	int	p9putenv(char*, char*);
 extern	int	getfields(char*, char**, int, int, char*);
 extern	int	gettokens(char *, char **, int, char *);
-extern	char*	getuser(void);
 extern	char*	p9getwd(char*, int);
 extern	void	p9longjmp(p9jmp_buf, int);
-extern	char*	mktemp(char*);
-extern	int		opentemp(char*);
 extern	void	p9notejmp(void*, p9jmp_buf, int);
 extern	void	perror(const char*);
 extern	int	postnote(int, int, char *);
 extern	double	p9pow10(int);
-extern	char*	searchpath(char*);
 extern	char*	p9ctime(long);
 #define p9setjmp(b)	sigsetjmp((void*)(b), 1)
 
@@ -293,10 +289,27 @@ extern	char*	getgoos(void);
 extern	char*	getgoarch(void);
 extern	char*	getgoroot(void);
 extern	char*	getgoversion(void);
+extern	char*	getgoarm(void);
+extern	char*	getgo386(void);
+extern	char*	getgoextlinkenabled(void);
+
+extern	char*	mktempdir(void);
+extern	void	removeall(char*);
+extern	int	runcmd(char**);
+
+extern	void	flagcount(char*, char*, int*);
+extern	void	flagint32(char*, char*, int32*);
+extern	void	flagint64(char*, char*, int64*);
+extern	void	flagstr(char*, char*, char**);
+extern	void	flagparse(int*, char***, void (*usage)(void));
+extern	void	flagfn0(char*, char*, void(*fn)(void));
+extern	void	flagfn1(char*, char*, void(*fn)(char*));
+extern	void	flagfn2(char*, char*, void(*fn)(char*, char*));
+extern	void	flagprint(int);
 
 #ifdef _WIN32
 
-#ifndef _WIN64
+#if !defined(_WIN64) && !defined(__MINGW64_VERSION_MAJOR)
 struct timespec {
 	int tv_sec;
 	long tv_nsec;
@@ -366,7 +379,7 @@ extern	char*	unsharp(char*);
 /* command line */
 extern char	*argv0;
 extern void __fixargv0(void);
-#define	ARGBEGIN	for((argv0?0:(argv0=(__fixargv0(),*argv))),argv++,argc--;\
+#define	ARGBEGIN	for((void)(argv0?0:(argv0=(__fixargv0(),*argv))),argv++,argc--;\
 			    argv[0] && argv[0][0]=='-' && argv[0][1];\
 			    argc--, argv++) {\
 				char *_args, *_argt;\
